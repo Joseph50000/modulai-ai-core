@@ -22,7 +22,10 @@ class ExecutePayload(BaseModel):
     output_schema: Optional[List[Dict[str, Any]]] = None
     rag_config: Optional[Dict[str, Any]] = None
     model_options: Optional[Dict[str, Any]] = None
-
+    project_id: Optional[str] = None
+    project_name: Optional[str] = None
+    input_reference: Optional[Dict[str, Any]] = None
+    context_reference: Optional[Dict[str, Any]] = None
 @app.get("/")
 def read_root():
     return {"status": "online", "service": "ModulAI Core", "version": "1.0.0"}
