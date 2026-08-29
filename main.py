@@ -31,9 +31,47 @@ class ExecutePayload(BaseModel):
     project_name: Optional[str] = None
     input_reference: Optional[Dict[str, Any]] = None
     context_reference: Optional[Dict[str, Any]] = None
+
+class RagIndexPayload(BaseModel):
+    collection: str
+    documents: List[str]
+    ids: List[str]
+    metadatas: Optional[List[Dict[str, Any]]] = None
+
+class RagSearchPayload(BaseModel):
+    collection: str
+    query: str
+    top_k: int = 5
+    filter_metadata: Optional[Dict[str, Any]] = None
+
 @app.get("/")
 def read_root():
     return {"status": "online", "service": "ModulAI Core", "version": "1.0.0"}
+
+@app.post("/api/rag/index")
+def index_rag_documents(payload: RagIndexPayload):
+    if not payload.documents:
+        raise HTTPException(status_code=400, detail="documents must not be empty")
+    if len(payload.documents) != len(payload.ids):
+        raise HTTPException(status_code=400, detail="documents and ids must have the same length")
+    metadatas = payload.metadatas or [{} for _ in payload.documents]
+    if len(metadatas) != len(payload.documents):
+        raise HTTPException(status_code=400, detail="metadatas and documents must have the same length")
+    try:
+        store = orchestrator.get_vector_store(payload.collection)
+        store.upsert_documents(payload.documents, metadatas, payload.ids)
+        return {"status": "indexed", "collection": payload.collection, "count": len(payload.documents), "total": store.count()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"RAG indexing failed: {e}")
+
+@app.post("/api/rag/search")
+def search_rag_documents(payload: RagSearchPayload):
+    try:
+        store = orchestrator.get_vector_store(payload.collection)
+        results = store.search(payload.query, top_k=max(1, min(payload.top_k, 20)), filter_metadata=payload.filter_metadata)
+        return {"collection": payload.collection, "query": payload.query, "results": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"RAG search failed: {e}")
 
 @app.post("/api/execute")
 def execute_use_case(payload: ExecutePayload):

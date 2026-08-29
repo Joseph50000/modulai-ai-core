@@ -48,9 +48,12 @@ class GenericVectorStore:
         logger.info(f"Recherche sémantique pour la requête: '{query}'")
         query_embedding = self.model.encode([query], convert_to_numpy=True).tolist()
         
+        collection_count = self.collection.count()
+        if collection_count == 0:
+            return []
         results = self.collection.query(
             query_embeddings=query_embedding,
-            n_results=top_k,
+            n_results=min(max(1, top_k), collection_count),
             where=filter_metadata if filter_metadata else None
         )
         
