@@ -32,6 +32,10 @@ class ExecutePayload(BaseModel):
     model_options: Optional[Dict[str, Any]] = None
     project_id: Optional[str] = None
     project_name: Optional[str] = None
+    module_id: Optional[str] = None
+    knowledge_base_id: Optional[str] = None
+    knowledge_base_ids: Optional[List[str]] = None
+    configuration: Optional[Dict[str, Any]] = None
     input_reference: Optional[Dict[str, Any]] = None
     context_reference: Optional[Dict[str, Any]] = None
 
@@ -126,6 +130,14 @@ def search_rag_documents(payload: RagSearchPayload):
         return {"collection": payload.collection, "query": payload.query, "results": results}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"RAG search failed: {e}")
+
+@app.post("/api/config/resolve")
+def resolve_configuration(payload: ExecutePayload):
+    """Prévisualise la configuration effective sans appeler de modèle ni modifier l’audit."""
+    try:
+        return orchestrator.config_resolver.resolve(payload.dict())["snapshot"]
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=str(error))
 
 @app.post("/api/execute")
 def execute_use_case(payload: ExecutePayload):

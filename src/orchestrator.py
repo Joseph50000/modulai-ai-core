@@ -1,10 +1,12 @@
 import logging
+import json
 import requests
 import os
 import time
 from typing import Dict, Any, List, Optional
 from src.providers.ollama_provider import OllamaProvider
 from src.rag.vector_store import GenericVectorStore
+from src.config_resolver import ConfigurationResolver
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +17,7 @@ class Orchestrator:
         self.provider = OllamaProvider()
         # Cache des instances de VectorStore par collection
         self.vector_stores = {}
+        self.config_resolver = ConfigurationResolver(NODE_GATEWAY_URL)
 
     def get_vector_store(self, collection_name: str) -> GenericVectorStore:
         if collection_name not in self.vector_stores:
@@ -126,17 +129,24 @@ class Orchestrator:
         
         logger.info(f"Orchestration dynamique - Module: {module} | Use Case: {use_case}")
         
-        # 1. Récupération Dynamique du métier (Prompt en base de données)
-        system_prompt = self._fetch_prompt_config(module, use_case)
-        
-        if not system_prompt:
+        # 1. Résolution unique et hiérarchique de toute la configuration du Core.
+        resolved = self.config_resolver.resolve(payload)
+        snapshot = resolved["snapshot"]
+        if snapshot.get("policy_violations"):
             return {
                 "status": "error",
-                "message": f"Configuration introuvable pour {module}/{use_case} dans ModulAI."
+                "module": module,
+                "use_case": use_case,
+                "message": "Exécution refusée par la policy: " + " ".join(snapshot["policy_violations"]),
+                "resolved_configuration": snapshot,
             }
+        prompt_config = resolved.get("prompt") or {}
+        system_prompt = prompt_config.get("instructions") or self._fetch_prompt_config(module, use_case)
+        if not system_prompt:
+            return {"status": "error", "message": f"Configuration introuvable pour {module}/{use_case} dans ModulAI.", "resolved_configuration": snapshot}
 
         user_prompt = payload.get("user_prompt") or ""
-        rag_config = payload.get("rag_config") or {}
+        rag_config = snapshot.get("rag") or {}
         
         context_text = ""
         # 2. RAG (Retrieval Augmented Generation) si activé
@@ -185,57 +195,21 @@ class Orchestrator:
             system_prompt += schema_instructions
             model_options["format"] = "json"
 
-        # 4. Configuration dynamique du Provider et du Modèle
-        # On vérifie si le module a surchargé le modèle (UUID du modèle)
-        override_model_id = model_options.get("model")
-        
-        provider_config = None
-        model_config = None
-        
-        if override_model_id:
-            try:
-                # Récupérer le modèle spécifié par le module
-                res = requests.get(f"{NODE_GATEWAY_URL}/aimodel/{override_model_id}", timeout=5)
-                if res.status_code == 200:
-                    model_config = res.json()
-                    # Récupérer le provider associé à ce modèle
-                    prov_res = requests.get(f"{NODE_GATEWAY_URL}/aiprovider/{model_config.get('provider_id')}", timeout=5)
-                    if prov_res.status_code == 200:
-                        provider_config = prov_res.json()
-            except Exception as e:
-                logger.error(f"Erreur lors de la récupération du modèle surchargé {override_model_id}: {e}")
-        
-        # Fallback sur les valeurs par défaut du Core
-        if not model_config:
-            model_config = self._fetch_default_model()
-        if not provider_config:
-            provider_config = self._fetch_active_provider()
-        
-        # model_id est la vraie chaîne utilisée par Ollama (ex: "gpt-4-turbo", "nemotron-3-super")
+        # 4. Utilisation des éléments déjà résolus par la hiérarchie du Core.
+        provider_config = resolved.get("provider") or {}
+        model_config = resolved.get("model") or {}
+        policy = resolved.get("policy") or {}
         target_model = model_config.get("model_id") if model_config else None
-        
         if provider_config:
-            base_url = provider_config.get("endpoint_url")
-            api_key = provider_config.get("secret_hash")
+            base_url = provider_config.get("endpoint_url") or provider_config.get("base_url")
+            api_key = provider_config.get("api_key") or provider_config.get("secret_hash")
             self.provider = OllamaProvider(base_url=base_url, api_key=api_key, default_model=target_model)
         else:
             self.provider = OllamaProvider(default_model=target_model)
-            
-        if model_config and model_options.get("temperature") is None:
-            model_options["temperature"] = model_config.get("temperature", 0.2)
-            
-        # 4.5. Application de la Policy Globale (Sécurité / Garde-fous)
-        policy = self._fetch_active_policy()
-        if policy:
-            temp_max = policy.get("temperature_max")
-            current_temp = model_options.get("temperature")
-            # Fallback a 1 si current_temp est None malgré le code au-dessus
-            if current_temp is None:
-                current_temp = 1
-                
-            if temp_max is not None and current_temp > temp_max:
-                model_options["temperature"] = temp_max
-                logger.info(f"Policy appliquée: température bridée à {temp_max}")
+        if snapshot.get("temperature") is not None:
+            model_options["temperature"] = snapshot["temperature"]
+        if snapshot.get("token_limit") is not None:
+            model_options.setdefault("num_predict", snapshot["token_limit"])
 
         # 5. Exécution LLM via le Provider dynamique
         start_time = time.time()
@@ -270,9 +244,9 @@ class Orchestrator:
                 "user_name": "API User",
                 "output": result_text if status == "success" else "",
                 "error": error_msg,
-                "human_validation": "pending" if status == "success" else "none",
-                "justification": "En attente de justification humaine" if status == "success" else "",
-                "resources_used": f"Prompt: {len(system_prompt)} chars | Provider: {provider_config.get('name') if provider_config else 'default'}" + (" | RAG" if context_text else ""),
+                "human_validation": "required" if status == "success" and snapshot.get("human_validation_required") else ("pending" if status == "success" else "none"),
+                "justification": "Validation humaine requise par la policy" if status == "success" and snapshot.get("human_validation_required") else ("En attente de justification humaine" if status == "success" else ""),
+                "resources_used": json.dumps({"prompt_chars": len(system_prompt), "provider": provider_config.get("name") or "default", "rag": bool(context_text), "resolved_configuration": snapshot}, ensure_ascii=False),
                 "input_reference": payload.get("input_reference"),
                 "context_reference": payload.get("context_reference")
             }
@@ -285,7 +259,8 @@ class Orchestrator:
                 "status": "error",
                 "module": module,
                 "use_case": use_case,
-                "message": error_msg
+                "message": error_msg,
+                "resolved_configuration": snapshot
             }
             
         return {
@@ -293,5 +268,6 @@ class Orchestrator:
             "module": module,
             "use_case": use_case,
             "result": result_text,
-            "rag_context_used": bool(context_text)
+            "rag_context_used": bool(context_text),
+            "resolved_configuration": snapshot
         }

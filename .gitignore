@@ -16,3 +16,6 @@ env/
 # OS
 .DS_Store
 *.log
+
+# Données locales générées par ChromaDB
+/data/
