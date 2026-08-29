@@ -6,3 +6,6 @@ chromadb
 sentence-transformers
 requests
 python-dotenv
+pypdf
+python-docx
+openpyxl

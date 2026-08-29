@@ -1,4 +1,7 @@
 import os
+import base64
+import csv
+import io
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -47,6 +50,57 @@ class RagSearchPayload(BaseModel):
 @app.get("/")
 def read_root():
     return {"status": "online", "service": "ModulAI Core", "version": "1.0.0"}
+
+@app.post("/api/rag/extract")
+def extract_rag_file(payload: Dict[str, Any]):
+    filename = str(payload.get("filename", ""))
+    encoded = payload.get("content_base64")
+    if not filename or not encoded:
+        raise HTTPException(status_code=400, detail="filename and content_base64 are required")
+    try:
+        raw = base64.b64decode(encoded)
+        extension = os.path.splitext(filename.lower())[1]
+        if extension in {".txt", ".md", ".text", ".csv"}:
+            text = raw.decode("utf-8-sig", errors="replace")
+            if extension == ".csv":
+                rows = list(csv.reader(io.StringIO(text)))
+                text = "\n".join(" | ".join(row) for row in rows)
+            extractor = "text-csv" if extension == ".csv" else "text"
+        elif extension == ".pdf":
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(raw))
+            text = "\n\n".join((page.extract_text() or "") for page in reader.pages)
+            extractor = "pypdf"
+        elif extension == ".docx":
+            from docx import Document
+            document = Document(io.BytesIO(raw))
+            paragraphs = [paragraph.text for paragraph in document.paragraphs if paragraph.text.strip()]
+            tables = [" | ".join(cell.text.strip() for cell in row.cells) for table in document.tables for row in table.rows]
+            text = "\n".join(paragraphs + tables)
+            extractor = "python-docx"
+        elif extension == ".xlsx":
+            from openpyxl import load_workbook
+            workbook = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+            sections = []
+            for sheet in workbook.worksheets:
+                sections.append(f"Feuille: {sheet.title}")
+                for row in sheet.iter_rows(values_only=True):
+                    values = [str(value) for value in row if value is not None]
+                    if values:
+                        sections.append(" | ".join(values))
+            text = "\n".join(sections)
+            extractor = "openpyxl"
+        else:
+            raise HTTPException(status_code=415, detail="Supported file types: PDF, DOCX, XLSX, CSV, TXT, MD")
+        if not text.strip():
+            raise HTTPException(status_code=422, detail="The extracted document is empty")
+        return {"filename": filename, "type": extension.lstrip("."), "extractor": extractor, "text": text[:1000000]}
+    except HTTPException:
+        raise
+    except ImportError as error:
+        raise HTTPException(status_code=503, detail=f"Extractor dependency missing: {error.name}")
+    except Exception as error:
+        raise HTTPException(status_code=422, detail=f"File extraction failed: {error}")
 
 @app.post("/api/rag/index")
 def index_rag_documents(payload: RagIndexPayload):
