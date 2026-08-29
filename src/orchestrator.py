@@ -246,7 +246,8 @@ class Orchestrator:
                 "error": error_msg,
                 "human_validation": "required" if status == "success" and snapshot.get("human_validation_required") else ("pending" if status == "success" else "none"),
                 "justification": "Validation humaine requise par la policy" if status == "success" and snapshot.get("human_validation_required") else ("En attente de justification humaine" if status == "success" else ""),
-                "resources_used": json.dumps({"prompt_chars": len(system_prompt), "provider": provider_config.get("name") or "default", "rag": bool(context_text), "resolved_configuration": snapshot}, ensure_ascii=False),
+                "resources_used": json.dumps({"prompt_chars": len(system_prompt), "provider": provider_config.get("name") or "default", "rag": bool(context_text)}, ensure_ascii=False),
+                "configuration_snapshot": json.dumps(snapshot, ensure_ascii=False, sort_keys=True),
                 "input_reference": payload.get("input_reference"),
                 "context_reference": payload.get("context_reference")
             }
