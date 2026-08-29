@@ -1,6 +1,11 @@
+import os
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Dict, Any, Optional
+
+load_dotenv()
+
 from src.orchestrator import Orchestrator
 
 app = FastAPI(
@@ -40,4 +45,9 @@ def execute_use_case(payload: ExecutePayload):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8001, reload=True)
+    uvicorn.run(
+        "main:app",
+        host=os.getenv("AI_CORE_HOST", "0.0.0.0"),
+        port=int(os.getenv("AI_CORE_PORT", "8001")),
+        reload=os.getenv("AI_CORE_RELOAD", "true").lower() == "true",
+    )
