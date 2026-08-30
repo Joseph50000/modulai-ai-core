@@ -60,7 +60,9 @@ class ConfigurationResolver:
         prompts = self._get("prompt", {"status": "active", "limit": 100})
         policies = self._get("aipolicy", {"status": "active", "limit": 100})
         versions = self._get("coreversion", {"status": "active", "limit": 20})
-        knowledge_bases = self._get("knowledgebase", {"status": "active", "limit": 200})
+        knowledge_bases = self._get("knowledgebase", {"limit": 200})
+        # `ready` est l’état opérationnel d’une base indexée ; `active` reste accepté pour les configurations legacy.
+        knowledge_bases = [kb for kb in (knowledge_bases or []) if kb.get("status") in {"active", "ready"}]
 
         project_config = self._json(project.get("configuration"), {})
         module_config = self._json(module.get("configuration"), {})
@@ -104,7 +106,7 @@ class ConfigurationResolver:
         requested_rag = payload.get("rag_config") if isinstance(payload.get("rag_config"), dict) else {}
         rag_config = {
             "enabled": requested_rag.get("enabled", module_config.get("rag_enabled", project_config.get("rag_enabled", False))),
-            "collection": requested_rag.get("collection") or module_config.get("knowledge_base_id") or project_config.get("knowledge_base_id"),
+            "collection": requested_rag.get("collection") or module_config.get("knowledge_base_collection") or module_config.get("knowledge_base_id") or project_config.get("knowledge_base_collection") or project_config.get("knowledge_base_id"),
             "query": requested_rag.get("query"),
             "top_k": requested_rag.get("top_k", settings.get("rag_top_k", 3)),
             **requested_rag,
