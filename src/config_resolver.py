@@ -64,7 +64,11 @@ class ConfigurationResolver:
         # `ready` est l’état opérationnel d’une base indexée ; `active` reste accepté pour les configurations legacy.
         knowledge_bases = [kb for kb in (knowledge_bases or []) if kb.get("status") in {"active", "ready"}]
 
-        project_config = self._json(project.get("configuration"), {})
+        project_config_raw = self._json(project.get("configuration"), {})
+        project_core_config = project_config_raw.get("core") if isinstance(project_config_raw.get("core"), dict) else {}
+        # Le frontend stocke les overrides projet dans configuration.core ; les valeurs
+        # legacy au niveau racine restent acceptées pour compatibilité.
+        project_config = {**project_config_raw, **project_core_config}
         module_config = self._json(module.get("configuration"), {})
         payload_config = payload.get("configuration") if isinstance(payload.get("configuration"), dict) else {}
 
@@ -86,15 +90,37 @@ class ConfigurationResolver:
         )
 
         requested_model_id = payload.get("model_options", {}).get("model") if isinstance(payload.get("model_options"), dict) else None
-        configured_model_id = requested_model_id or module_config.get("model_id") or module_config.get("model") or project_config.get("model_id") or project_config.get("model") or payload_config.get("model_id") or payload_config.get("model") or settings.get("default_model_id")
+        configured_model_id = (
+            requested_model_id
+            or module_config.get("model_id")
+            or module_config.get("model")
+            or project_config.get("default_model_id")
+            or project_config.get("model_id")
+            or project_config.get("model")
+            or payload_config.get("model_id")
+            or payload_config.get("model")
+            or settings.get("default_model_id")
+        )
         model = self._first(models, lambda item: item.get("id") == configured_model_id or item.get("model_id") == configured_model_id)
         if not model and configured_model_id:
             model = self._get(f"aimodel/{configured_model_id}") or {}
         if not model:
             model = self._first(models, lambda item: item.get("is_default") is True) or (models[0] if models else {})
 
-        configured_provider_id = module_config.get("provider_id") or module_config.get("provider") or project_config.get("provider_id") or project_config.get("provider") or (model or {}).get("provider_id") or settings.get("default_provider")
-        provider = self._first(providers, lambda item: item.get("id") == configured_provider_id or item.get("name") == configured_provider_id)
+        explicit_provider_id = (
+            module_config.get("provider_id")
+            or project_config.get("default_provider")
+            or project_config.get("provider_id")
+            or module_config.get("provider")
+            or project_config.get("provider")
+            or payload_config.get("provider_id")
+            or payload_config.get("provider")
+        )
+        # Un modèle appartient à un provider : lorsqu’un modèle est sélectionné,
+        # son provider lié est prioritaire sur un ancien provider textuel conservé
+        # dans une configuration legacy de module.
+        configured_provider_id = (model or {}).get("provider_id") or explicit_provider_id or settings.get("default_provider")
+        provider = self._first(providers, lambda item: item.get("id") == configured_provider_id or item.get("name") == configured_provider_id or item.get("type") == configured_provider_id)
         if not provider and configured_provider_id:
             provider = self._get(f"aiprovider/{configured_provider_id}") or {}
         if not provider:
