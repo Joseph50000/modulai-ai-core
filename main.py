@@ -51,6 +51,10 @@ class RagSearchPayload(BaseModel):
     top_k: int = 5
     filter_metadata: Optional[Dict[str, Any]] = None
 
+class RagInspectPayload(BaseModel):
+    collection: str
+    limit: int = 100
+
 @app.get("/")
 def read_root():
     return {"status": "online", "service": "ModulAI Core", "version": "1.0.0"}
@@ -130,6 +134,14 @@ def search_rag_documents(payload: RagSearchPayload):
         return {"collection": payload.collection, "query": payload.query, "results": results}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"RAG search failed: {e}")
+
+@app.post("/api/rag/inspect")
+def inspect_rag_collection(payload: RagInspectPayload):
+    try:
+        store = orchestrator.get_vector_store(payload.collection)
+        return store.inspect(payload.limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"RAG inspection failed: {e}")
 
 @app.post("/api/config/resolve")
 def resolve_configuration(payload: ExecutePayload):
