@@ -79,13 +79,20 @@ class GenericVectorStore:
         if total == 0:
             return {"name": self.collection.name, "count": 0, "ids": [], "documents": [], "embeddings": [], "metadatas": []}
         result = self.collection.get(include=["documents", "embeddings", "metadatas"], limit=min(max(1, limit), 100))
-        embeddings = result.get("embeddings") or []
+        embeddings = result.get("embeddings")
+        if embeddings is None:
+            embeddings = []
+        if hasattr(embeddings, "tolist"):
+            embeddings = embeddings.tolist()
+        else:
+            embeddings = list(embeddings)
+        embedding_dimensions = len(embeddings[0]) if len(embeddings) > 0 else 0
         return {
             "name": self.collection.name,
             "count": total,
-            "ids": result.get("ids") or [],
-            "documents": result.get("documents") or [],
-            "metadatas": result.get("metadatas") or [],
+            "ids": result.get("ids") if result.get("ids") is not None else [],
+            "documents": result.get("documents") if result.get("documents") is not None else [],
+            "metadatas": result.get("metadatas") if result.get("metadatas") is not None else [],
             "embeddings": embeddings,
-            "embedding_dimensions": len(embeddings[0]) if embeddings else 0,
+            "embedding_dimensions": embedding_dimensions,
         }
