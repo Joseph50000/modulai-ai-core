@@ -73,12 +73,16 @@ class GenericVectorStore:
     def count(self) -> int:
         return self.collection.count()
 
-    def inspect(self, limit: int = 100) -> Dict[str, Any]:
+    def inspect(self, limit: int = 100, offset: int = 0) -> Dict[str, Any]:
         """Retourne un aperçu borné de l’arborescence de la collection."""
         total = self.collection.count()
         if total == 0:
             return {"name": self.collection.name, "count": 0, "ids": [], "documents": [], "embeddings": [], "metadatas": []}
-        result = self.collection.get(include=["documents", "embeddings", "metadatas"], limit=min(max(1, limit), 100))
+        result = self.collection.get(
+            include=["documents", "embeddings", "metadatas"],
+            limit=min(max(1, limit), 100),
+            offset=max(0, offset),
+        )
         embeddings = result.get("embeddings")
         if embeddings is None:
             embeddings = []

@@ -54,6 +54,7 @@ class RagSearchPayload(BaseModel):
 class RagInspectPayload(BaseModel):
     collection: str
     limit: int = 100
+    offset: int = 0
 
 @app.get("/")
 def read_root():
@@ -139,7 +140,7 @@ def search_rag_documents(payload: RagSearchPayload):
 def inspect_rag_collection(payload: RagInspectPayload):
     try:
         store = orchestrator.get_vector_store(payload.collection)
-        return store.inspect(payload.limit)
+        return store.inspect(payload.limit, payload.offset)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"RAG inspection failed: {e}")
 
