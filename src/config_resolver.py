@@ -44,8 +44,9 @@ class ConfigurationResolver:
     def resolve(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         project_id = payload.get("project_id")
         module_id = payload.get("module_id")
-        module_key = payload.get("module")
-        use_case = payload.get("use_case") or ""
+        module_key = payload.get("module_key") or payload.get("module")
+        use_case_key = payload.get("use_case_key") or payload.get("use_case") or ""
+        use_case = payload.get("use_case") or use_case_key
 
         settings_list = self._get("coresettings", {"limit": 1})
         settings = settings_list[0] if isinstance(settings_list, list) and settings_list else {}
@@ -76,20 +77,26 @@ class ConfigurationResolver:
             return policy.get("scope") == scope and (not ref or policy.get("scope_ref") in {ref, use_case, module_id, project_id})
 
         policy = (
-            self._first(policies, lambda item: matches_scope(item, "use_case", use_case))
+            self._first(policies, lambda item: matches_scope(item, "use_case", use_case_key))
+            or self._first(policies, lambda item: matches_scope(item, "use_case", use_case))
             or self._first(policies, lambda item: matches_scope(item, "module", module_id or module_key))
             or self._first(policies, lambda item: matches_scope(item, "project", project_id))
             or self._first(policies, lambda item: item.get("scope") in {"global", "core", None})
         )
 
+        prompt_candidates = [use_case_key, use_case]
+        if module_key:
+            prompt_candidates.append(f"{module_key}:{use_case_key}")
+            prompt_candidates.append(f"{module_key}:{use_case}")
         prompt = (
-            self._first(prompts, lambda item: item.get("use_case") == use_case and item.get("module_id") == module_id)
-            or self._first(prompts, lambda item: item.get("use_case") == f"{module_key}:{use_case}")
-            or self._first(prompts, lambda item: item.get("use_case") == use_case and item.get("project_id") == project_id)
-            or self._first(prompts, lambda item: item.get("use_case") == use_case)
+            self._first(prompts, lambda item: item.get("use_case") in prompt_candidates and item.get("module_id") == module_id)
+            or self._first(prompts, lambda item: item.get("use_case") in prompt_candidates and item.get("project_id") == project_id)
+            or self._first(prompts, lambda item: item.get("use_case") in prompt_candidates)
         )
 
-        requested_model_id = payload.get("model_options", {}).get("model") if isinstance(payload.get("model_options"), dict) else None
+        request_options = payload.get("request_options") if isinstance(payload.get("request_options"), dict) else {}
+        legacy_model_options = payload.get("model_options") if isinstance(payload.get("model_options"), dict) else {}
+        requested_model_id = request_options.get("model_id") or request_options.get("model") or legacy_model_options.get("model")
         configured_model_id = (
             requested_model_id
             or module_config.get("model_id")
@@ -128,13 +135,15 @@ class ConfigurationResolver:
 
         current_version = settings.get("current_core_version")
         version = self._first(versions, lambda item: item.get("version") == current_version) or self._first(versions, lambda item: item.get("is_latest") is True) or {}
-        model_options = payload.get("model_options") if isinstance(payload.get("model_options"), dict) else {}
+        model_options = {**legacy_model_options, **request_options}
         requested_rag = payload.get("rag_config") if isinstance(payload.get("rag_config"), dict) else {}
+        request_rag_query = request_options.get("rag_query")
+        request_top_k = request_options.get("top_k")
         rag_config = {
             "enabled": requested_rag.get("enabled", module_config.get("rag_enabled", project_config.get("rag_enabled", False))),
             "collection": requested_rag.get("collection") or module_config.get("knowledge_base_collection") or module_config.get("knowledge_base_id") or project_config.get("knowledge_base_collection") or project_config.get("knowledge_base_id"),
-            "query": requested_rag.get("query"),
-            "top_k": requested_rag.get("top_k", settings.get("rag_top_k", 3)),
+            "query": request_rag_query or requested_rag.get("query"),
+            "top_k": request_top_k if request_top_k is not None else requested_rag.get("top_k", settings.get("rag_top_k", 3)),
             **requested_rag,
         }
         requested_kb_id = payload.get("knowledge_base_id") or payload.get("knowledgeBaseId") or rag_config.get("knowledge_base_id") or rag_config.get("knowledgeBaseId")
@@ -164,6 +173,7 @@ class ConfigurationResolver:
             "project_id": project_id,
             "module_id": module_id or module.get("id"),
             "module_key": module_key or module.get("module_key"),
+            "use_case_key": use_case_key,
             "use_case": use_case,
             "provider_id": provider.get("id") if provider else None,
             "provider_name": provider.get("name") if provider else None,

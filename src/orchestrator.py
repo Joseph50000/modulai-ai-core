@@ -124,8 +124,9 @@ class Orchestrator:
             "model_options": { "temperature": 0.2 }
         }
         """
-        module = payload.get("module")
-        use_case = payload.get("use_case")
+        module = payload.get("module_key") or payload.get("module")
+        use_case = payload.get("use_case") or payload.get("use_case_key")
+        input_data = payload.get("input") if isinstance(payload.get("input"), dict) else payload.get("variables", {})
         
         logger.info(f"Orchestration dynamique - Module: {module} | Use Case: {use_case}")
         
@@ -146,6 +147,11 @@ class Orchestrator:
             return {"status": "error", "message": f"Configuration introuvable pour {module}/{use_case} dans ModulAI.", "resolved_configuration": snapshot}
 
         user_prompt = payload.get("user_prompt") or ""
+        if not user_prompt and isinstance(input_data, dict):
+            user_prompt = "\n".join(
+                f"{key}: {json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else value or ''}"
+                for key, value in input_data.items()
+            )
         rag_config = snapshot.get("rag") or {}
         
         context_text = ""
@@ -173,7 +179,7 @@ class Orchestrator:
             system_prompt += f"\n\nContexte additionnel depuis la base de connaissances:\n{context_text}"
             
         # 3.5. Remplacement des variables personnalisées ({{variable}}) depuis le payload
-        variables = payload.get("variables", {})
+        variables = input_data
         if isinstance(variables, dict):
             for k, v in variables.items():
                 system_prompt = system_prompt.replace(f"{{{{{k}}}}}", str(v))
