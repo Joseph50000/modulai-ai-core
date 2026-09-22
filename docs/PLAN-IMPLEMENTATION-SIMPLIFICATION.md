@@ -70,7 +70,7 @@ La cartographie initiale du Core, du gateway, du frontend et du modele de donnee
 
 Le gateway emet maintenant `module_id`, `module_key`, `use_case_key`, `input` et `request_options`. Le Core accepte ces champs et conserve les champs historiques pour assurer une migration sans rupture.
 
-La phase n'est pas encore terminee : il reste a tester un appel reel, definir les erreurs de contrat, confirmer les champs obligatoires et verifier la compatibilite avec les appels frontend.
+La phase n'est pas encore terminee : il reste a ajouter les tests du contrat, tester un appel reel, definir les erreurs de contrat, confirmer les champs obligatoires et verifier la compatibilite avec les appels frontend.
 
 #### Phase 2 - stabilisation du ConfigurationResolver
 
@@ -78,7 +78,22 @@ La phase n'est pas encore terminee : il reste a tester un appel reel, definir le
 
 Le resolver lit deja les identifiants canoniques et les options ponctuelles. Il produit toujours le snapshot de configuration resolue.
 
-La stabilisation complete n'est pas encore realisee : les fallbacks concurrents existent encore dans l'orchestrateur, les priorites doivent etre testees, et les validations strictes du contrat et des options doivent etre formalisees.
+La stabilisation complete n'est pas encore realisee : il reste a ajouter les tests du `ConfigurationResolver`, tester les priorites, formaliser les validations strictes du contrat et des options, et supprimer les fallbacks concurrents de l'orchestrateur.
+
+#### Phase 3 - suppression progressive des chemins legacy
+
+**Statut : NON DEMARREE - depend des validations des Phases 1 et 2.**
+
+Cette phase commencera uniquement lorsque le contrat Gateway -> AI Core et la resolution de configuration seront valides par les tests et par un parcours API complet.
+
+Elle consistera a :
+
+- supprimer progressivement les anciens champs `module` et `use_case` ;
+- retirer `model_options` lorsque `request_options` couvrira tous les besoins ;
+- supprimer les resolutions directes concurrentes dans l'orchestrateur ;
+- migrer les donnees encore stockees dans les formats legacy ;
+- retirer les configurations dupliquees devenues inutiles ;
+- conserver une lecture legacy temporaire uniquement pendant la migration.
 
 #### Prochaine etape
 
