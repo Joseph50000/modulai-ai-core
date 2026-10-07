@@ -28,6 +28,22 @@ audio_service = AudioTranscriptionService(llm_provider=orchestrator.provider)
 from src.nlp import NLPService, NLPAnalyzeRequest, NLPAnalyzeResponse
 nlp_service = NLPService(llm_provider=orchestrator.provider)
 
+from src.rag import RAGService, RAGResolveRequest, RAGResolveResponse
+rag_service = RAGService(llm_provider=orchestrator.provider, vector_store_factory=orchestrator.get_vector_store)
+
+from src.analytics import AnalyticsService, AnalyticsQueryRequest, AnalyticsChartResponse, AnalyticsIntent
+analytics_service = AnalyticsService(llm_provider=orchestrator.provider)
+
+from src.sync import (
+    SyncService,
+    SyncScheduler,
+    SyncJobRequest,
+    SyncJobResponse,
+    ScheduledJobSpec
+)
+sync_service = SyncService(vector_store_getter=orchestrator.get_vector_store)
+sync_scheduler = SyncScheduler(sync_service=sync_service)
+
 from typing import Dict, Any, Optional, List
 
 class ExecutePayload(BaseModel):
@@ -63,6 +79,7 @@ class RagSearchPayload(BaseModel):
     query: str
     top_k: int = 5
     filter_metadata: Optional[Dict[str, Any]] = None
+    min_similarity_score: Optional[float] = None
 
 class RagInspectPayload(BaseModel):
     collection: str
@@ -144,7 +161,12 @@ def index_rag_documents(payload: RagIndexPayload):
 def search_rag_documents(payload: RagSearchPayload):
     try:
         store = orchestrator.get_vector_store(payload.collection)
-        results = store.search(payload.query, top_k=max(1, min(payload.top_k, 20)), filter_metadata=payload.filter_metadata)
+        results = store.search(
+            payload.query,
+            top_k=max(1, min(payload.top_k, 50)),
+            filter_metadata=payload.filter_metadata,
+            min_similarity_score=payload.min_similarity_score
+        )
         return {"collection": payload.collection, "query": payload.query, "results": results}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"RAG search failed: {e}")
@@ -271,6 +293,167 @@ def analyze_nlp_text_stream(payload: NLPAnalyzeRequest):
             yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+@app.post("/api/rag/resolve", response_model=RAGResolveResponse)
+def resolve_rag_case(payload: RAGResolveRequest):
+    if not payload.query or not payload.query.strip():
+        raise HTTPException(status_code=400, detail="query est requis pour la résolution RAG")
+
+    try:
+        response = rag_service.resolve(payload)
+
+        # Enregistrement d'audit vers le Backend Node.js
+        try:
+            audit_payload = {
+                "project_id": payload.project_id,
+                "module_name": payload.module_key,
+                "use_case": payload.use_case_key or "rag-resolution",
+                "prompt_name": payload.use_case_key or "rag-resolution",
+                "provider": getattr(orchestrator.provider, "name", "ollama"),
+                "model": getattr(orchestrator.provider, "default_model", "llama"),
+                "status": "success",
+                "execution_time": response.execution_time_ms,
+                "user_name": "API User",
+                "output": json.dumps({
+                    "reasoning": response.reasoning,
+                    "propositions_count": len(response.propositions),
+                    "historical_sources_count": len(response.historical_sources),
+                    "documentary_sources_count": len(response.documentary_sources),
+                }, ensure_ascii=False),
+                "resources_used": json.dumps({
+                    "query_length": len(payload.query),
+                    "historical_collection": payload.historical_collection,
+                    "documentary_collection": payload.documentary_collection,
+                }, ensure_ascii=False),
+            }
+            node_gateway_url = os.getenv("NODE_GATEWAY_URL", "http://localhost:3000/api")
+            requests.post(f"{node_gateway_url}/aiexecution", json=audit_payload, timeout=(1, 2))
+        except Exception:
+            pass
+
+        return response
+    except ValueError as val_err:
+        raise HTTPException(status_code=400, detail=str(val_err))
+    except Exception as err:
+        raise HTTPException(status_code=500, detail=str(err))
+
+@app.post("/api/rag/resolve/stream")
+def resolve_rag_case_stream(payload: RAGResolveRequest):
+    if not payload.query or not payload.query.strip():
+        raise HTTPException(status_code=400, detail="query est requis pour la résolution RAG")
+
+    def event_generator():
+        try:
+            for event in rag_service.resolve_stream(payload):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+ 
+@app.post("/api/analytics/query", response_model=AnalyticsIntent)
+def extract_analytics_intent(payload: AnalyticsQueryRequest):
+    if not payload.query or not payload.query.strip():
+        raise HTTPException(status_code=400, detail="query est requis pour l'analyse analytique")
+    try:
+        intent = analytics_service.intent_engine.infer_intent(
+            query=payload.query,
+            schema=payload.dataset_schema
+        )
+        return intent
+    except Exception as err:
+        raise HTTPException(status_code=500, detail=str(err))
+
+@app.post("/api/analytics/chart", response_model=AnalyticsChartResponse)
+def generate_analytics_chart(payload: AnalyticsQueryRequest):
+    if not payload.query or not payload.query.strip():
+        raise HTTPException(status_code=400, detail="query est requis pour la génération de graphique")
+
+    try:
+        response = analytics_service.process_query(payload)
+
+        # Enregistrement d'audit vers le Backend Node.js
+        try:
+            audit_payload = {
+                "project_id": payload.project_id,
+                "module_name": payload.module_key,
+                "use_case": payload.use_case_key or "analytics-chart",
+                "prompt_name": payload.use_case_key or "analytics-chart",
+                "provider": getattr(orchestrator.provider, "name", "ollama"),
+                "model": getattr(orchestrator.provider, "default_model", "llama"),
+                "status": "success",
+                "execution_time": response.execution_time_ms,
+                "user_name": "API User",
+                "output": json.dumps({
+                    "chart_type": response.intent.chart_type,
+                    "title": response.intent.title,
+                    "aggregated_rows": len(response.aggregated_data),
+                    "insight": response.summary_insight
+                }, ensure_ascii=False),
+                "resources_used": json.dumps({
+                    "query_length": len(payload.query),
+                    "records_count": len(payload.records) if payload.records else 0,
+                    "fields_count": len(payload.dataset_schema.fields) if payload.dataset_schema else 0,
+                }, ensure_ascii=False),
+            }
+            node_gateway_url = os.getenv("NODE_GATEWAY_URL", "http://localhost:3000/api")
+            requests.post(f"{node_gateway_url}/aiexecution", json=audit_payload, timeout=(1, 2))
+        except Exception:
+            pass
+
+        return response
+    except ValueError as val_err:
+        raise HTTPException(status_code=400, detail=str(val_err))
+    except Exception as err:
+        raise HTTPException(status_code=500, detail=str(err))
+
+# ============================================================================
+# Core Ingestion & Sync Framework Endpoints
+# ============================================================================
+
+@app.post("/api/sync/execute", response_model=SyncJobResponse)
+def execute_sync_job(payload: SyncJobRequest):
+    """Exécute un job d'ingestion et de synchronisation vers le VectorStore à la demande."""
+    try:
+        response = sync_service.execute_job(payload)
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur d'exécution de la synchronisation: {e}")
+
+@app.post("/api/sync/schedule")
+def schedule_sync_job(payload: ScheduledJobSpec):
+    """Enregistre ou met à jour une tâche de synchronisation récurrente."""
+    try:
+        result = sync_scheduler.add_sync_job(payload)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur de planification du job: {e}")
+
+@app.get("/api/sync/jobs")
+def list_sync_jobs():
+    """Liste tous les jobs de synchronisation planifiés actifs."""
+    try:
+        return {"jobs": sync_scheduler.list_jobs()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur de récupération des jobs: {e}")
+
+@app.delete("/api/sync/jobs/{job_id}")
+def delete_sync_job(job_id: str):
+    """Supprime un job planifié existant."""
+    removed = sync_scheduler.remove_sync_job(job_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' introuvable")
+    return {"status": "deleted", "job_id": job_id}
+
+@app.post("/api/sync/jobs/{job_id}/trigger", response_model=SyncJobResponse)
+def trigger_scheduled_job(job_id: str):
+    """Déclenche manuellement un job planifié enregistré."""
+    try:
+        return sync_scheduler.trigger_job(job_id)
+    except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

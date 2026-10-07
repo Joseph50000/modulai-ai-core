@@ -19,3 +19,6 @@ env/
 
 # Données locales générées par ChromaDB
 /data/
+
+# Outils internes
+.safe-code-change/

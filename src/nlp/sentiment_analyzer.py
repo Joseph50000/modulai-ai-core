@@ -21,13 +21,13 @@ class SentimentAnalyzer:
         "mauvais", "nul", "lent", "incompetent", "probleme", "erreur", "defaut", "echec",
         "panne", "decu", "insatisfait", "deception", "retard", "attente", "inadmissible",
         "scandale", "honte", "inacceptable", "colere", "furieux", "arnaque", "catastrophe",
-        "grave", "voleur", "refus", "mensonge", "plainte", "bloque", "perte", "perdu",
+        "grave", "voleur", "refus", "mensonge", "insatisfaction", "bloque", "perte", "perdu",
         "bad", "terrible", "slow", "error", "failed", "unhappy", "angry", "broken", "issue"
     }
 
     HIGH_ANGER_WORDS = {
         "scandale", "inadmissible", "honte", "inacceptable", "voleur", "arnaqueur",
-        "furieux", "outre", "incompetents", "foutage", "catastrophique", "plainte"
+        "furieux", "outre", "incompetents", "foutage", "catastrophique", "deception"
     }
 
     INTENSIFIERS = {

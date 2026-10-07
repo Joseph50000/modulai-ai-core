@@ -112,13 +112,13 @@ class Orchestrator:
         
         Payload attendu depuis le client Frontend :
         {
-            "module": "gpr",
-            "use_case": "analyse-plainte",
-            "user_prompt": "Plainte: ...",
+            "module": "support",
+            "use_case": "ticket-triage",
+            "user_prompt": "Ticket: ...",
             "rag_config": {
                 "enabled": true,
-                "collection": "gpr_claims",
-                "query": "texte de la plainte",
+                "collection": "knowledge_base",
+                "query": "texte de la requete",
                 "top_k": 3
             },
             "model_options": { "temperature": 0.2 }
@@ -155,27 +155,58 @@ class Orchestrator:
         rag_config = snapshot.get("rag") or {}
         
         context_text = ""
+        historical_context_text = ""
+        documentary_context_text = ""
+
         # 2. RAG (Retrieval Augmented Generation) si activé
         if rag_config.get("enabled"):
-            collection = rag_config.get("collection")
             query = rag_config.get("query", user_prompt)
-            top_k = rag_config.get("top_k", 3)
+            min_score = rag_config.get("min_similarity_score")
             
-            if collection:
-                store = self.get_vector_store(collection)
-                results = store.search(query, top_k=top_k)
-                if results:
+            # Recherche historique / transactionnelle
+            hist_col = rag_config.get("historical_collection") or rag_config.get("collection")
+            if hist_col:
+                top_k_hist = rag_config.get("top_k_history") or rag_config.get("top_k", 3)
+                hist_filter = rag_config.get("history_filter") or rag_config.get("filter_metadata")
+                store = self.get_vector_store(hist_col)
+                hist_results = store.search(query, top_k=top_k_hist, filter_metadata=hist_filter, min_similarity_score=min_score)
+                if hist_results:
                     context_lines = []
-                    for i, r in enumerate(results):
-                        context_lines.append(f"- Contexte {i+1} : {r['document']}")
-                    context_text = "\n".join(context_lines)
-                else:
-                    context_text = "Aucun contexte trouvé dans la base de connaissances."
+                    for i, r in enumerate(hist_results):
+                        context_lines.append(f"- Cas similaire {i+1} : {r['document']}")
+                    historical_context_text = "\n".join(context_lines)
+
+            # Recherche documentaire / procédurale
+            doc_col = rag_config.get("documentary_collection")
+            if doc_col:
+                top_k_doc = rag_config.get("top_k_docs") or 3
+                doc_filter = rag_config.get("documentary_filter")
+                doc_store = self.get_vector_store(doc_col)
+                doc_results = doc_store.search(query, top_k=top_k_doc, filter_metadata=doc_filter, min_similarity_score=min_score)
+                if doc_results:
+                    doc_lines = []
+                    for i, r in enumerate(doc_results):
+                        doc_lines.append(f"- Référence {i+1} : {r['document']}")
+                    documentary_context_text = "\n".join(doc_lines)
+
+            # Combinaison pour rétrocompatibilité
+            combined_parts = []
+            if historical_context_text:
+                combined_parts.append(historical_context_text)
+            if documentary_context_text:
+                combined_parts.append(documentary_context_text)
+            context_text = "\n\n".join(combined_parts) if combined_parts else "Aucun contexte trouvé dans la base de connaissances."
                     
-        # 3. Construction du Prompt Final
+        # 3. Construction du Prompt Final avec injection multi-contextes
+        if "{historical_context}" in system_prompt or "{{historical_context}}" in system_prompt:
+            system_prompt = system_prompt.replace("{historical_context}", historical_context_text).replace("{{historical_context}}", historical_context_text)
+
+        if "{documentary_context}" in system_prompt or "{{documentary_context}}" in system_prompt:
+            system_prompt = system_prompt.replace("{documentary_context}", documentary_context_text).replace("{{documentary_context}}", documentary_context_text)
+
         if "{context}" in system_prompt or "{{context}}" in system_prompt:
             system_prompt = system_prompt.replace("{context}", context_text).replace("{{context}}", context_text)
-        elif context_text:
+        elif context_text and context_text != "Aucun contexte trouvé dans la base de connaissances.":
             system_prompt += f"\n\nContexte additionnel depuis la base de connaissances:\n{context_text}"
             
         # 3.5. Remplacement des variables personnalisées ({{variable}}) depuis le payload
