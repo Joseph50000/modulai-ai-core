@@ -2,8 +2,11 @@ import os
 import base64
 import csv
 import io
+import json
+import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Dict, Any, Optional
 
@@ -19,17 +22,27 @@ app = FastAPI(
 
 orchestrator = Orchestrator()
 
+from src.audio import AudioTranscriptionService, TranscribeRequest, TranscribeResponse
+audio_service = AudioTranscriptionService(llm_provider=orchestrator.provider)
+
+from src.nlp import NLPService, NLPAnalyzeRequest, NLPAnalyzeResponse
+nlp_service = NLPService(llm_provider=orchestrator.provider)
+
 from typing import Dict, Any, Optional, List
 
 class ExecutePayload(BaseModel):
-    module: str
-    use_case: str
+    module: Optional[str] = None
+    module_key: Optional[str] = None
+    use_case: Optional[str] = None
+    use_case_key: Optional[str] = None
     system_prompt_template: Optional[str] = None
     user_prompt: Optional[str] = None
+    input: Optional[Dict[str, Any]] = None
     variables: Optional[Dict[str, Any]] = None
     output_schema: Optional[List[Dict[str, Any]]] = None
     rag_config: Optional[Dict[str, Any]] = None
     model_options: Optional[Dict[str, Any]] = None
+    request_options: Optional[Dict[str, Any]] = None
     project_id: Optional[str] = None
     project_name: Optional[str] = None
     module_id: Optional[str] = None
@@ -159,6 +172,105 @@ def execute_use_case(payload: ExecutePayload):
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/audio/transcribe", response_model=TranscribeResponse)
+def transcribe_audio(payload: TranscribeRequest):
+    if not payload.audio_base64:
+        raise HTTPException(status_code=400, detail="audio_base64 est requis pour la transcription")
+    try:
+        audio_bytes = base64.b64decode(payload.audio_base64)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Échec de décodage base64: {e}")
+
+    try:
+        response = audio_service.process(audio_bytes=audio_bytes, request=payload)
+
+        # Enregistrement d'audit vers le Backend Node.js
+        try:
+            audit_payload = {
+                "project_id": payload.project_id,
+                "module_name": payload.module_key,
+                "use_case": payload.use_case_key or "audio-transcription",
+                "prompt_name": payload.use_case_key or "audio-transcription",
+                "provider": getattr(audio_service.transcription_provider, "provider", "whisper"),
+                "model": getattr(audio_service.transcription_provider, "model", "whisper"),
+                "status": "success",
+                "execution_time": response.execution_time_ms,
+                "user_name": "API User",
+                "output": response.text,
+                "resources_used": json.dumps({
+                    "duration_seconds": response.duration_seconds,
+                    "word_count": response.structure.word_count,
+                    "correction_status": response.correction_status,
+                }, ensure_ascii=False),
+            }
+            node_gateway_url = os.getenv("NODE_GATEWAY_URL", "http://localhost:3000/api")
+            requests.post(f"{node_gateway_url}/aiexecution", json=audit_payload, timeout=(1, 2))
+        except Exception:
+            pass
+
+        return response
+    except ValueError as val_err:
+        raise HTTPException(status_code=400, detail=str(val_err))
+    except Exception as err:
+        raise HTTPException(status_code=500, detail=str(err))
+
+@app.post("/api/nlp/analyze", response_model=NLPAnalyzeResponse)
+def analyze_nlp_text(payload: NLPAnalyzeRequest):
+    if not payload.text or not payload.text.strip():
+        raise HTTPException(status_code=400, detail="text est requis pour l'analyse NLP")
+
+    try:
+        response = nlp_service.process(payload)
+
+        # Enregistrement d'audit vers le Backend Node.js
+        try:
+            audit_payload = {
+                "project_id": payload.project_id,
+                "module_name": payload.module_key,
+                "use_case": payload.use_case_key or "nlp-analysis",
+                "prompt_name": payload.use_case_key or "nlp-analysis",
+                "provider": getattr(orchestrator.provider, "name", "ollama"),
+                "model": getattr(orchestrator.provider, "default_model", "llama"),
+                "status": "success",
+                "execution_time": response.execution_time_ms,
+                "user_name": "API User",
+                "output": json.dumps({
+                    "urgency": response.urgency,
+                    "sentiment": response.sentiment,
+                    "suggested_category": response.suggested_category,
+                    "suggested_subcategory": response.suggested_subcategory,
+                    "sensitive_keywords": response.sensitive_keywords_detected,
+                }, ensure_ascii=False),
+                "resources_used": json.dumps({
+                    "words_count": len(payload.text.split()),
+                    "sentiment_score": response.sentiment_score,
+                }, ensure_ascii=False),
+            }
+            node_gateway_url = os.getenv("NODE_GATEWAY_URL", "http://localhost:3000/api")
+            requests.post(f"{node_gateway_url}/aiexecution", json=audit_payload, timeout=(1, 2))
+        except Exception:
+            pass
+
+        return response
+    except ValueError as val_err:
+        raise HTTPException(status_code=400, detail=str(val_err))
+    except Exception as err:
+        raise HTTPException(status_code=500, detail=str(err))
+
+@app.post("/api/nlp/analyze/stream")
+def analyze_nlp_text_stream(payload: NLPAnalyzeRequest):
+    if not payload.text or not payload.text.strip():
+        raise HTTPException(status_code=400, detail="text est requis pour l'analyse NLP")
+
+    def event_generator():
+        try:
+            for event in nlp_service.process_stream(payload):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 if __name__ == "__main__":
     import uvicorn
