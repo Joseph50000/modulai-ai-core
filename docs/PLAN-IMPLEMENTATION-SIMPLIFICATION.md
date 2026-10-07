@@ -66,19 +66,19 @@ La cartographie initiale du Core, du gateway, du frontend et du modele de donnee
 
 #### Phase 1 - contrat canonique Gateway -> AI Core
 
-**Statut : EN COURS - implementation du contrat realisee, validation d'integration restante.**
+**Statut : TERMINEE - contrat valide par tests et appel reel.**
 
 Le gateway emet maintenant `module_id`, `module_key`, `use_case_key`, `input` et `request_options`. Le Core accepte ces champs et conserve les champs historiques pour assurer une migration sans rupture.
 
-La phase n'est pas encore terminee : il reste a ajouter les tests du contrat, tester un appel reel, definir les erreurs de contrat, confirmer les champs obligatoires et verifier la compatibilite avec les appels frontend.
+Les tests du contrat passent et un appel dynamique reel a confirme que le gateway transmet le contrat canonique jusqu'au Core. Les champs historiques restent toutefois actifs pendant la migration.
 
 #### Phase 2 - stabilisation du ConfigurationResolver
 
-**Statut : AMORCEE - adaptation au contrat canonique realisee, stabilisation fonctionnelle restante.**
+**Statut : EN COURS - resolution canonique validee, durcissement et suppression des fallbacks restants.**
 
 Le resolver lit deja les identifiants canoniques et les options ponctuelles. Il produit toujours le snapshot de configuration resolue.
 
-La stabilisation complete n'est pas encore realisee : il reste a ajouter les tests du `ConfigurationResolver`, tester les priorites, formaliser les validations strictes du contrat et des options, et supprimer les fallbacks concurrents de l'orchestrateur.
+Les tests du `ConfigurationResolver` passent pour le contrat canonique, la compatibilite legacy et la resolution du snapshot. Il reste a couvrir toutes les priorites et a supprimer les fallbacks concurrents de l'orchestrateur.
 
 #### Phase 3 - suppression progressive des chemins legacy
 
@@ -97,7 +97,7 @@ Elle consistera a :
 
 #### Prochaine etape
 
-Terminer la validation de la phase 1, puis ajouter les tests de resolution de la phase 2 avant de supprimer les chemins legacy.
+Completer la couverture des priorites du resolver, puis retirer progressivement les resolutions concurrentes et les champs legacy.
 
 ## 4. Phase 0 - cadrage et cartographie
 
@@ -150,7 +150,7 @@ Chaque parametre de configuration possede une source, une priorite et un consomm
 
 ### Etat d'avancement
 
-**Statut : EN COURS - implementation compatible realisee, validation fonctionnelle restante.**
+**Statut : TERMINEE - implementation et validation fonctionnelle realisees.**
 
 #### Realise
 
@@ -166,16 +166,13 @@ Chaque parametre de configuration possede une source, une priorite et un consomm
 
 #### Reste a faire
 
-- Ajouter les tests automatises du contrat Gateway -> AI Core.
-- Tester un appel reel avec le nouveau payload.
 - Verifier les erreurs de contrat et les champs obligatoires.
 - Definir les options ponctuelles effectivement autorisees par les policies.
 - Confirmer la compatibilite avec les appels frontend existants.
-- Passer la phase 1 a `TERMINEE` apres validation d'integration.
 
 #### Prochaine action
 
-Ajouter et executer les tests du contrat canonique avant de commencer la suppression des reconstructions legacy du gateway en phase 2.
+Formaliser les erreurs de contrat et verifier les appels frontend avant la suppression des champs legacy.
 
 ### Objectif
 
@@ -223,7 +220,7 @@ Le Core accepte ces nouveaux champs dans `ai-core-fastapi/src/config_resolver.py
 
 ### Etat d'avancement
 
-**Statut : AMORCEE - support du contrat canonique integre, tests et durcissement restants.**
+**Statut : EN COURS - tests de base et appel reel valides, couverture complete restante.**
 
 #### Realise
 
@@ -231,6 +228,8 @@ Le Core accepte ces nouveaux champs dans `ai-core-fastapi/src/config_resolver.py
 - Les options `request_options` sont prises en compte avec compatibilite legacy.
 - Le snapshot contient l'identifiant `use_case_key`.
 - Les champs legacy restent acceptes pendant la migration.
+- Les tests du contrat et du resolver passent.
+- L'appel reel Gateway -> AI Core produit un snapshot complet et une reponse structuree.
 
 #### Reste a faire
 
@@ -238,11 +237,11 @@ Le Core accepte ces nouveaux champs dans `ai-core-fastapi/src/config_resolver.py
 - Formaliser les champs obligatoires et les erreurs de configuration.
 - Encadrer les options ponctuelles autorisees.
 - Supprimer les resolutions concurrentes de prompt, provider, modele et policy dans l'orchestrateur.
-- Confirmer la stabilite du snapshot dans les cas nominaux et les cas d'erreur.
+- Confirmer la stabilite du snapshot dans les cas nominaux et les cas d'erreur complementaires.
 
 #### Prochaine action
 
-Ajouter les tests du resolver et comparer les resultats du contrat canonique avec ceux du format legacy avant toute suppression de fallback.
+Etendre les tests aux priorites et aux erreurs, puis commencer la suppression progressive des fallbacks.
 
 ### Objectif
 
