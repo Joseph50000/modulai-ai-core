@@ -4,6 +4,8 @@ from typing import List, Dict, Any, Optional
 from sentence_transformers import SentenceTransformer
 import logging
 
+from src.rag.filter_builder import FilterBuilder
+
 logger = logging.getLogger(__name__)
 
 # Par défaut, stocker les données RAG dans un dossier data à la racine de fastapi
@@ -41,9 +43,15 @@ class GenericVectorStore:
             documents=documents
         )
 
-    def search(self, query: str, top_k: int = 5, filter_metadata: Optional[Dict[str, Any]] = None):
+    def search(
+        self,
+        query: str,
+        top_k: int = 5,
+        filter_metadata: Optional[Dict[str, Any]] = None,
+        min_similarity_score: Optional[float] = None
+    ) -> List[Dict[str, Any]]:
         """
-        Recherche sémantique générique.
+        Recherche sémantique générique avec filtres dynamiques et score normalisé.
         """
         logger.info(f"Recherche sémantique pour la requête: '{query}'")
         query_embedding = self.model.encode([query], convert_to_numpy=True).tolist()
@@ -51,24 +59,49 @@ class GenericVectorStore:
         collection_count = self.collection.count()
         if collection_count == 0:
             return []
+
+        where_clause = FilterBuilder.build(filter_metadata)
+
         results = self.collection.query(
             query_embeddings=query_embedding,
             n_results=min(max(1, top_k), collection_count),
-            where=filter_metadata if filter_metadata else None
+            where=where_clause
         )
         
-        # Formatage générique des résultats
+        # Formatage générique des résultats avec calcul de score normalisé
         formatted_results = []
         if results and results.get('documents') and len(results['documents'][0]) > 0:
             for idx in range(len(results['documents'][0])):
+                dist = results['distances'][0][idx] if results.get('distances') else 0.0
+                # Score de similarité inversé entre 0.0 et 1.0
+                similarity_score = round(1.0 / (1.0 + max(0.0, float(dist))), 4)
+
+                # Filtrage optionnel par seuil
+                if min_similarity_score is not None and similarity_score < min_similarity_score:
+                    continue
+
                 formatted_results.append({
                     "id": results['ids'][0][idx],
                     "document": results['documents'][0][idx],
                     "metadata": results['metadatas'][0][idx] if results.get('metadatas') else {},
-                    "distance": results['distances'][0][idx] if results.get('distances') else 0.0
+                    "distance": float(dist),
+                    "similarity_score": similarity_score
                 })
                 
         return formatted_results
+
+    def delete_documents(self, ids: List[str]):
+        """Supprime une liste de documents par leurs IDs."""
+        if ids:
+            self.collection.delete(ids=ids)
+
+    def clear(self):
+        """Purge tous les documents de la collection."""
+        try:
+            self.chroma_client.delete_collection(name=self.collection.name)
+            self.collection = self.chroma_client.get_or_create_collection(name=self.collection.name)
+        except Exception as e:
+            logger.warning(f"Erreur lors de la purge de la collection {self.collection.name}: {e}")
 
     def count(self) -> int:
         return self.collection.count()
