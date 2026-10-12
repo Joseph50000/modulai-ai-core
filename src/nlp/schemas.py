@@ -44,6 +44,8 @@ class NLPAnalyzeRequest(BaseModel):
     summary_type: str = Field("extractive", description="extractive ou abstractive")
     max_summary_words: int = Field(50, description="Nombre maximal de mots pour le résumé")
     language: str = Field("fr", description="Langue principale du texte")
+    model: Optional[str] = None
+    provider: Optional[str] = None
 
 class NLPAnalyzeResponse(BaseModel):
     status: str = "success"

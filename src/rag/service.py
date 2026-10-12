@@ -36,6 +36,11 @@ class RAGService:
         self.context_aggregator = ContextAggregator()
         self.resolution_engine = ResolutionEngine(llm_provider=self.llm_provider)
 
+    def set_llm_provider(self, provider):
+        """Met à jour dynamiquement le provider LLM pour la résolution assistée."""
+        self.llm_provider = provider
+        self.resolution_engine = ResolutionEngine(llm_provider=self.llm_provider)
+
     def _get_store(self, collection_name: str) -> GenericVectorStore:
         return self.vector_store_factory(collection_name)
 

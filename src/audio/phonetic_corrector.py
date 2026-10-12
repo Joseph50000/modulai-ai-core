@@ -109,10 +109,11 @@ class PhoneticCorrector:
             }
 
         except Exception as e:
-            logger.error("[AUDIO_CORRECTION] Erreur lors de l'appel LLM : %s", e)
+            logger.warning("[AUDIO_CORRECTION] Erreur lors de l'appel LLM (%s), conservation du texte brut.", e)
             return {
                 "text": text,
                 "status": "ERROR",
                 "applied": False,
                 "error": str(e),
+                "review_reason": f"Correction LLM ignorée suite à indisponibilité du modèle : {e}",
             }

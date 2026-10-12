@@ -36,6 +36,12 @@ class NLPService:
         self.classifier = HierarchicalClassifier(llm_provider=self.llm_provider)
         self.urgency_evaluator = UrgencyEvaluator(llm_provider=self.llm_provider)
 
+    def set_llm_provider(self, provider):
+        """Met à jour dynamiquement le provider LLM pour l'ensemble du pipeline NLP."""
+        self.llm_provider = provider
+        self.classifier = HierarchicalClassifier(llm_provider=self.llm_provider)
+        self.urgency_evaluator = UrgencyEvaluator(llm_provider=self.llm_provider)
+
     def process(self, request: NLPAnalyzeRequest) -> NLPAnalyzeResponse:
         """
         Exécution synchrone complète du pipeline NLP.

@@ -42,6 +42,8 @@ class AnalyticsQueryRequest(BaseModel):
     module_key: Optional[str] = None
     use_case_key: Optional[str] = None
     correlation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    model: Optional[str] = None
+    provider: Optional[str] = None
 
 class AnalyticsChartResponse(BaseModel):
     status: str = "success"

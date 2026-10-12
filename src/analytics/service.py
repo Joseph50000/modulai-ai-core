@@ -23,6 +23,10 @@ class AnalyticsService:
         self.data_engine = DataEngine()
         self.echarts_builder = EChartsBuilder()
 
+    def set_llm_provider(self, provider):
+        """Met à jour dynamiquement le provider LLM pour l'inférence d'intention."""
+        self.intent_engine = NLToIntentEngine(llm_provider=provider)
+
     def process_query(self, request: AnalyticsQueryRequest) -> AnalyticsChartResponse:
         start_time = time.time()
         

@@ -35,6 +35,10 @@ class TranscribeRequest(BaseModel):
     diarization: bool = Field(False, description="Active la labellisation des locuteurs")
     speaker_roles: Optional[List[str]] = Field(None, description="Rôles personnalisés à attribuer aux locuteurs")
     custom_correction_prompt: Optional[str] = Field(None, description="Prompt de correction personnalisé pour ce cas d'usage")
+    model: Optional[str] = None
+    provider: Optional[str] = None
+    api_key: Optional[str] = None
+    endpoint_url: Optional[str] = None
 
 
 class TranscribeResponse(BaseModel):
@@ -48,3 +52,5 @@ class TranscribeResponse(BaseModel):
     speakers: List[str] = Field(default_factory=list)
     structure: TextStructure
     execution_time_ms: int = 0
+    simulation_mode: bool = False
+    warning: Optional[str] = None

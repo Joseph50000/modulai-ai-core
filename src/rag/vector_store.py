@@ -53,8 +53,10 @@ class GenericVectorStore:
         """
         Recherche sémantique générique avec filtres dynamiques et score normalisé.
         """
+        if not query or not str(query).strip():
+            return []
         logger.info(f"Recherche sémantique pour la requête: '{query}'")
-        query_embedding = self.model.encode([query], convert_to_numpy=True).tolist()
+        query_embedding = self.model.encode([str(query)], convert_to_numpy=True).tolist()
         
         collection_count = self.collection.count()
         if collection_count == 0:

@@ -52,6 +52,7 @@ class RAGResolveRequest(BaseModel):
     custom_resolution_prompt: Optional[str] = Field(None, description="Gabarit surchargé du prompt de résolution")
     target_solution_field: Optional[str] = Field(None, description="Champ des métadonnées historiques contenant la solution passée")
     model: Optional[str] = None
+    provider: Optional[str] = None
 
 class RAGResolveResponse(BaseModel):
     status: str = "success"

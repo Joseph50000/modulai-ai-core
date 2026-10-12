@@ -19,6 +19,25 @@ class AudioTranscriptionService:
         self.transcription_provider = transcription_provider or TranscriptionProvider()
         self.phonetic_corrector = PhoneticCorrector(llm_provider=llm_provider)
 
+    def set_llm_provider(self, provider):
+        """Met à jour dynamiquement le provider LLM pour la correction phonétique."""
+        self.phonetic_corrector = PhoneticCorrector(llm_provider=provider)
+
+    def configure_transcription_provider(
+        self,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+    ):
+        """Configure dynamiquement le fournisseur de transcription Whisper."""
+        self.transcription_provider = TranscriptionProvider(
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            provider=provider,
+        )
+
     def process(
         self,
         audio_bytes: bytes,
@@ -103,6 +122,12 @@ class AudioTranscriptionService:
             correction_status,
         )
 
+        is_mock = getattr(self.transcription_provider, "provider", "").lower() == "mock"
+        mock_warning = (
+            "Mode simulation actif : aucune clé API de transcription audio configurée (Whisper/Groq requise pour une transcription réelle)."
+            if is_mock else None
+        )
+
         return TranscribeResponse(
             status="success",
             text=final_text,
@@ -114,4 +139,6 @@ class AudioTranscriptionService:
             speakers=speakers,
             structure=structure_obj,
             execution_time_ms=exec_time_ms,
+            simulation_mode=is_mock,
+            warning=mock_warning,
         )
