@@ -5,7 +5,8 @@ from ollama import Client
 logger = logging.getLogger(__name__)
 
 class OllamaProvider:
-    def __init__(self, base_url: str = None, api_key: str = None, default_model: str = None):
+    def __init__(self, base_url: str = None, api_key: str = None, default_model: str = None, name: str = "Ollama"):
+        self.name = name
         self.base_url = base_url or os.getenv("LLM_BASE_URL", "http://127.0.0.1:11434")
         api_key = api_key or os.getenv("LLM_API_KEY", "")
         self.default_model = default_model or os.getenv("LLM_MODEL_NAME", "llama3.2:1b")

@@ -51,7 +51,11 @@ class ConfigurationResolver:
         settings_list = self._get("coresettings", {"limit": 1})
         settings = settings_list[0] if isinstance(settings_list, list) and settings_list else {}
         project = self._get(f"project/{project_id}") if project_id else {}
+        if isinstance(project, list):
+            project = project[0] if project else {}
         module = self._get(f"module/{module_id}") if module_id else {}
+        if isinstance(module, list):
+            module = module[0] if module else {}
         if not module and module_key:
             modules = self._get("module", {"module_key": module_key, "limit": 20})
             module = self._first(modules, lambda item: item.get("module_key") == module_key) or {}
@@ -147,14 +151,28 @@ class ConfigurationResolver:
             **requested_rag,
         }
         requested_kb_id = payload.get("knowledge_base_id") or payload.get("knowledgeBaseId") or rag_config.get("knowledge_base_id") or rag_config.get("knowledgeBaseId")
-        requested_collection = rag_config.get("collection")
-        selected_kb = self._first(knowledge_bases, lambda item: item.get("id") == requested_kb_id or item.get("id") == requested_collection or f"kb_{item.get('id')}" == requested_collection)
-        allowed_kb = bool(selected_kb) and ((not selected_kb.get("project_id") and not selected_kb.get("module_id")) or selected_kb.get("project_id") == project_id or selected_kb.get("module_id") in {module_id, module_key})
+        requested_collection = rag_config.get("collection") or rag_config.get("historical_collection") or rag_config.get("documentary_collection")
+        selected_kb = self._first(
+            knowledge_bases,
+            lambda item: (
+                (requested_kb_id and item.get("id") == requested_kb_id)
+                or (requested_collection and (item.get("id") == requested_collection or f"kb_{item.get('id')}" == requested_collection))
+                or (item.get("module_id") in {module_id, module_key} if (module_id or module_key) else False)
+            )
+        )
+        allowed_kb = not selected_kb or (
+            (not selected_kb.get("project_id") and not selected_kb.get("module_id"))
+            or selected_kb.get("project_id") == project_id
+            or selected_kb.get("module_id") in {module_id, module_key}
+        )
         violations = []
         if policy and policy.get("rag_required") and not rag_config.get("enabled"):
             violations.append("Cette policy exige l’utilisation d’une base de connaissances RAG.")
-        if rag_config.get("enabled") and (requested_kb_id or requested_collection) and not allowed_kb:
-            violations.append("La base de connaissances demandée n’est pas accessible dans la portée de cette exécution.")
+        if knowledge_bases and rag_config.get("enabled"):
+            if requested_kb_id and not selected_kb:
+                violations.append("La base de connaissances demandée n’est pas accessible dans la portée de cette exécution.")
+            elif selected_kb and not allowed_kb:
+                violations.append("La base de connaissances demandée n’est pas accessible dans la portée de cette exécution.")
 
         temperature = model_options.get("temperature")
         if temperature is None:

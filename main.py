@@ -44,7 +44,7 @@ from src.sync import (
 sync_service = SyncService(vector_store_getter=orchestrator.get_vector_store)
 sync_scheduler = SyncScheduler(sync_service=sync_service)
 
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union
 
 class ExecutePayload(BaseModel):
     module: Optional[str] = None
@@ -52,10 +52,12 @@ class ExecutePayload(BaseModel):
     use_case: Optional[str] = None
     use_case_key: Optional[str] = None
     system_prompt_template: Optional[str] = None
+    system_prompt: Optional[str] = None
+    prompt: Optional[str] = None
     user_prompt: Optional[str] = None
     input: Optional[Dict[str, Any]] = None
     variables: Optional[Dict[str, Any]] = None
-    output_schema: Optional[List[Dict[str, Any]]] = None
+    output_schema: Optional[Union[List[Dict[str, Any]], Dict[str, Any], str]] = None
     rag_config: Optional[Dict[str, Any]] = None
     model_options: Optional[Dict[str, Any]] = None
     request_options: Optional[Dict[str, Any]] = None
@@ -205,6 +207,48 @@ def transcribe_audio(payload: TranscribeRequest):
         raise HTTPException(status_code=400, detail=f"Échec de décodage base64: {e}")
 
     try:
+        resolved_ctx = orchestrator.resolve_provider_for_request(payload.dict())
+        if resolved_ctx.get("provider_instance"):
+            audio_service.set_llm_provider(resolved_ctx["provider_instance"])
+
+        # Résolution dynamique des credentials de transcription (Groq / OpenAI / Cloud Audio)
+        provider_cfg = resolved_ctx.get("resolved", {}).get("provider") or {}
+        model_cfg = resolved_ctx.get("resolved", {}).get("model") or {}
+
+        provider_type = (payload.provider or provider_cfg.get("type") or provider_cfg.get("name") or "").lower()
+        is_audio_compatible = any(k in provider_type for k in ["groq", "openai", "whisper", "audio"]) or (
+            bool(payload.endpoint_url and "transcription" in payload.endpoint_url.lower())
+        )
+
+        audio_key = payload.api_key or os.getenv("AUDIO_TRANSCRIPTION_API_KEY") or os.getenv("GROQ_API_KEY") or os.getenv("OPENAI_API_KEY")
+        audio_url = payload.endpoint_url or os.getenv("AUDIO_TRANSCRIPTION_URL")
+        audio_model = payload.model or os.getenv("AUDIO_TRANSCRIPTION_MODEL")
+        audio_provider_type = payload.provider
+
+        if is_audio_compatible:
+            if not audio_key and provider_cfg.get("api_key"):
+                audio_key = provider_cfg.get("api_key")
+            if not audio_url:
+                if "groq" in provider_type:
+                    audio_url = "https://api.groq.com/openai/v1/audio/transcriptions"
+                    audio_model = audio_model or "whisper-large-v3-turbo"
+                    audio_provider_type = "groq"
+                elif "openai" in provider_type:
+                    audio_url = "https://api.openai.com/v1/audio/transcriptions"
+                    audio_model = audio_model or "whisper-1"
+                    audio_provider_type = "openai"
+                elif "transcription" in (provider_cfg.get("endpoint_url") or "").lower():
+                    audio_url = provider_cfg.get("endpoint_url")
+        elif not audio_key:
+            audio_provider_type = "mock"
+
+        audio_service.configure_transcription_provider(
+            api_key=audio_key,
+            base_url=audio_url,
+            model=audio_model,
+            provider=audio_provider_type,
+        )
+
         response = audio_service.process(audio_bytes=audio_bytes, request=payload)
 
         # Enregistrement d'audit vers le Backend Node.js
@@ -214,8 +258,8 @@ def transcribe_audio(payload: TranscribeRequest):
                 "module_name": payload.module_key,
                 "use_case": payload.use_case_key or "audio-transcription",
                 "prompt_name": payload.use_case_key or "audio-transcription",
-                "provider": getattr(audio_service.transcription_provider, "provider", "whisper"),
-                "model": getattr(audio_service.transcription_provider, "model", "whisper"),
+                "provider": resolved_ctx.get("provider_name") or getattr(audio_service.transcription_provider, "provider", "whisper"),
+                "model": resolved_ctx.get("model_name") or getattr(audio_service.transcription_provider, "model", "whisper"),
                 "status": "success",
                 "execution_time": response.execution_time_ms,
                 "user_name": "API User",
@@ -243,6 +287,10 @@ def analyze_nlp_text(payload: NLPAnalyzeRequest):
         raise HTTPException(status_code=400, detail="text est requis pour l'analyse NLP")
 
     try:
+        resolved_ctx = orchestrator.resolve_provider_for_request(payload.dict())
+        if resolved_ctx.get("provider_instance"):
+            nlp_service.set_llm_provider(resolved_ctx["provider_instance"])
+
         response = nlp_service.process(payload)
 
         # Enregistrement d'audit vers le Backend Node.js
@@ -252,8 +300,8 @@ def analyze_nlp_text(payload: NLPAnalyzeRequest):
                 "module_name": payload.module_key,
                 "use_case": payload.use_case_key or "nlp-analysis",
                 "prompt_name": payload.use_case_key or "nlp-analysis",
-                "provider": getattr(orchestrator.provider, "name", "ollama"),
-                "model": getattr(orchestrator.provider, "default_model", "llama"),
+                "provider": resolved_ctx.get("provider_name") or "default",
+                "model": resolved_ctx.get("model_name") or "default",
                 "status": "success",
                 "execution_time": response.execution_time_ms,
                 "user_name": "API User",
@@ -267,6 +315,8 @@ def analyze_nlp_text(payload: NLPAnalyzeRequest):
                 "resources_used": json.dumps({
                     "words_count": len(payload.text.split()),
                     "sentiment_score": response.sentiment_score,
+                    "provider": resolved_ctx.get("provider_name"),
+                    "model": resolved_ctx.get("model_name"),
                 }, ensure_ascii=False),
             }
             node_gateway_url = os.getenv("NODE_GATEWAY_URL", "http://localhost:3000/api")
@@ -285,6 +335,10 @@ def analyze_nlp_text_stream(payload: NLPAnalyzeRequest):
     if not payload.text or not payload.text.strip():
         raise HTTPException(status_code=400, detail="text est requis pour l'analyse NLP")
 
+    resolved_ctx = orchestrator.resolve_provider_for_request(payload.dict())
+    if resolved_ctx.get("provider_instance"):
+        nlp_service.set_llm_provider(resolved_ctx["provider_instance"])
+
     def event_generator():
         try:
             for event in nlp_service.process_stream(payload):
@@ -300,6 +354,13 @@ def resolve_rag_case(payload: RAGResolveRequest):
         raise HTTPException(status_code=400, detail="query est requis pour la résolution RAG")
 
     try:
+        resolved_ctx = orchestrator.resolve_provider_for_request(payload.dict())
+        if resolved_ctx.get("provider_instance"):
+            rag_service.set_llm_provider(resolved_ctx["provider_instance"])
+
+        if not payload.model and resolved_ctx.get("model_id"):
+            payload.model = resolved_ctx["model_id"]
+
         response = rag_service.resolve(payload)
 
         # Enregistrement d'audit vers le Backend Node.js
@@ -309,8 +370,8 @@ def resolve_rag_case(payload: RAGResolveRequest):
                 "module_name": payload.module_key,
                 "use_case": payload.use_case_key or "rag-resolution",
                 "prompt_name": payload.use_case_key or "rag-resolution",
-                "provider": getattr(orchestrator.provider, "name", "ollama"),
-                "model": getattr(orchestrator.provider, "default_model", "llama"),
+                "provider": resolved_ctx.get("provider_name") or "default",
+                "model": resolved_ctx.get("model_name") or "default",
                 "status": "success",
                 "execution_time": response.execution_time_ms,
                 "user_name": "API User",
@@ -324,6 +385,8 @@ def resolve_rag_case(payload: RAGResolveRequest):
                     "query_length": len(payload.query),
                     "historical_collection": payload.historical_collection,
                     "documentary_collection": payload.documentary_collection,
+                    "provider": resolved_ctx.get("provider_name"),
+                    "model": resolved_ctx.get("model_name"),
                 }, ensure_ascii=False),
             }
             node_gateway_url = os.getenv("NODE_GATEWAY_URL", "http://localhost:3000/api")
@@ -341,6 +404,13 @@ def resolve_rag_case(payload: RAGResolveRequest):
 def resolve_rag_case_stream(payload: RAGResolveRequest):
     if not payload.query or not payload.query.strip():
         raise HTTPException(status_code=400, detail="query est requis pour la résolution RAG")
+
+    resolved_ctx = orchestrator.resolve_provider_for_request(payload.dict())
+    if resolved_ctx.get("provider_instance"):
+        rag_service.set_llm_provider(resolved_ctx["provider_instance"])
+
+    if not payload.model and resolved_ctx.get("model_id"):
+        payload.model = resolved_ctx["model_id"]
 
     def event_generator():
         try:
@@ -370,6 +440,10 @@ def generate_analytics_chart(payload: AnalyticsQueryRequest):
         raise HTTPException(status_code=400, detail="query est requis pour la génération de graphique")
 
     try:
+        resolved_ctx = orchestrator.resolve_provider_for_request(payload.dict())
+        if resolved_ctx.get("provider_instance"):
+            analytics_service.set_llm_provider(resolved_ctx["provider_instance"])
+
         response = analytics_service.process_query(payload)
 
         # Enregistrement d'audit vers le Backend Node.js
@@ -379,8 +453,8 @@ def generate_analytics_chart(payload: AnalyticsQueryRequest):
                 "module_name": payload.module_key,
                 "use_case": payload.use_case_key or "analytics-chart",
                 "prompt_name": payload.use_case_key or "analytics-chart",
-                "provider": getattr(orchestrator.provider, "name", "ollama"),
-                "model": getattr(orchestrator.provider, "default_model", "llama"),
+                "provider": resolved_ctx.get("provider_name") or "default",
+                "model": resolved_ctx.get("model_name") or "default",
                 "status": "success",
                 "execution_time": response.execution_time_ms,
                 "user_name": "API User",
@@ -394,6 +468,8 @@ def generate_analytics_chart(payload: AnalyticsQueryRequest):
                     "query_length": len(payload.query),
                     "records_count": len(payload.records) if payload.records else 0,
                     "fields_count": len(payload.dataset_schema.fields) if payload.dataset_schema else 0,
+                    "provider": resolved_ctx.get("provider_name"),
+                    "model": resolved_ctx.get("model_name"),
                 }, ensure_ascii=False),
             }
             node_gateway_url = os.getenv("NODE_GATEWAY_URL", "http://localhost:3000/api")
