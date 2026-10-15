@@ -83,7 +83,8 @@ class NLPService:
             sensitive_keywords_detected=detected_keywords,
             sentiment=sentiment,
             context_nature=request.context_nature,
-            context_definition=request.context_definition
+            context_definition=request.context_definition,
+            model=request.model
         )
 
         # 5. Classification hiérarchique
@@ -93,7 +94,8 @@ class NLPService:
             text=request.text,
             taxonomy=request.taxonomy,
             context_nature=request.context_nature,
-            context_definition=request.context_definition
+            context_definition=request.context_definition,
+            model=request.model
         )
 
         execution_time_ms = int((time.time() - start_time) * 1000)

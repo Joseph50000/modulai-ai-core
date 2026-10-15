@@ -100,7 +100,7 @@ class ConfigurationResolver:
 
         request_options = payload.get("request_options") if isinstance(payload.get("request_options"), dict) else {}
         legacy_model_options = payload.get("model_options") if isinstance(payload.get("model_options"), dict) else {}
-        requested_model_id = request_options.get("model_id") or request_options.get("model") or legacy_model_options.get("model")
+        requested_model_id = payload.get("model") or request_options.get("model_id") or request_options.get("model") or legacy_model_options.get("model")
         configured_model_id = (
             requested_model_id
             or module_config.get("model_id")
@@ -118,19 +118,27 @@ class ConfigurationResolver:
         if not model:
             model = self._first(models, lambda item: item.get("is_default") is True) or (models[0] if models else {})
 
-        explicit_provider_id = (
-            module_config.get("provider_id")
-            or project_config.get("default_provider")
-            or project_config.get("provider_id")
-            or module_config.get("provider")
-            or project_config.get("provider")
+        requested_provider_id = (
+            payload.get("provider")
+            or payload.get("provider_id")
+            or request_options.get("provider_id")
+            or request_options.get("provider")
+            or legacy_model_options.get("provider")
             or payload_config.get("provider_id")
             or payload_config.get("provider")
         )
-        # Un modèle appartient à un provider : lorsqu’un modèle est sélectionné,
-        # son provider lié est prioritaire sur un ancien provider textuel conservé
-        # dans une configuration legacy de module.
-        configured_provider_id = (model or {}).get("provider_id") or explicit_provider_id or settings.get("default_provider")
+        # Un modèle appartient à un provider : lorsqu’un modèle est explicitement sélectionné,
+        # son provider lié est prioritaire sur les anciens défauts du module.
+        configured_provider_id = (
+            requested_provider_id
+            or (model or {}).get("provider_id")
+            or module_config.get("provider_id")
+            or module_config.get("provider")
+            or project_config.get("default_provider")
+            or project_config.get("provider_id")
+            or project_config.get("provider")
+            or settings.get("default_provider")
+        )
         provider = self._first(providers, lambda item: item.get("id") == configured_provider_id or item.get("name") == configured_provider_id or item.get("type") == configured_provider_id)
         if not provider and configured_provider_id:
             provider = self._get(f"aiprovider/{configured_provider_id}") or {}
@@ -186,6 +194,12 @@ class ConfigurationResolver:
             fallback = self._first(models, lambda item: item.get("id") == fallback_id or item.get("model_id") == fallback_id)
             if fallback:
                 model = fallback
+                if not requested_provider_id and model.get("provider_id"):
+                    new_prov = self._first(providers, lambda item: item.get("id") == model.get("provider_id") or item.get("name") == model.get("provider_id"))
+                    if not new_prov and model.get("provider_id"):
+                        new_prov = self._get(f"aiprovider/{model.get('provider_id')}") or {}
+                    if new_prov:
+                        provider = new_prov
 
         snapshot = {
             "project_id": project_id,

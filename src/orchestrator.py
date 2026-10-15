@@ -5,8 +5,10 @@ import os
 import time
 from typing import Dict, Any, List, Optional
 from src.providers.ollama_provider import OllamaProvider
+from src.providers.openai_provider import OpenAICompatibleProvider
 from src.rag.vector_store import GenericVectorStore
 from src.config_resolver import ConfigurationResolver
+from src.pipeline_runner import PipelineRunner
 
 logger = logging.getLogger(__name__)
 
@@ -14,10 +16,24 @@ NODE_GATEWAY_URL = os.getenv("NODE_GATEWAY_URL", "http://localhost:3000/api")
 
 class Orchestrator:
     def __init__(self):
-        self.provider = OllamaProvider()
+        cloud_key = os.getenv("GROQ_API_KEY") or os.getenv("LLM_API_KEY")
+        if cloud_key:
+            self.provider = OpenAICompatibleProvider(
+                base_url=os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1"),
+                api_key=cloud_key,
+                default_model=os.getenv("LLM_MODEL_NAME", "qwen/qwen3.8-27b"),
+                name="Groq Cloud"
+            )
+        else:
+            self.provider = OllamaProvider()
         # Cache des instances de VectorStore par collection
         self.vector_stores = {}
         self.config_resolver = ConfigurationResolver(NODE_GATEWAY_URL)
+        self.pipeline_runner = PipelineRunner(
+            provider_resolver=lambda: self.provider,
+            vector_store_resolver=self.get_vector_store,
+            default_provider=self.provider,
+        )
 
     def get_vector_store(self, collection_name: str) -> GenericVectorStore:
         if collection_name not in self.vector_stores:
@@ -106,16 +122,18 @@ class Orchestrator:
             logger.error(f"Erreur lors de la récupération du prompt depuis le Gateway: {e}")
             return ""
 
-    def resolve_provider_for_request(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def resolve_provider_for_request(self, payload: Dict[str, Any], resolved: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Résout dynamiquement le provider, le modèle et la configuration associés à la requête.
         Retourne une instance OllamaProvider configurée et les métadonnées résolues.
+        Réutilise l'objet resolved pré-calculé si fourni pour éviter tout appel réseau redondant.
         """
-        try:
-            resolved = self.config_resolver.resolve(payload)
-        except Exception as e:
-            logger.warning(f"Erreur lors de la résolution de configuration : {e}")
-            resolved = {}
+        if resolved is None:
+            try:
+                resolved = self.config_resolver.resolve(payload)
+            except Exception as e:
+                logger.warning(f"Erreur lors de la résolution de configuration : {e}")
+                resolved = {}
 
         provider_config = resolved.get("provider") or {}
         model_config = resolved.get("model") or {}
@@ -125,8 +143,12 @@ class Orchestrator:
 
         # 1. Modèle cible dynamique (priorité : payload -> model_config -> settings DB -> env -> generic fallback)
         default_model_env = os.getenv("LLM_MODEL_NAME")
+        raw_model = payload.get("model")
+        if raw_model and model_config.get("name") == raw_model and model_config.get("model_id"):
+            raw_model = model_config.get("model_id")
+
         target_model_id = (
-            payload.get("model")
+            raw_model
             or model_config.get("model_id")
             or model_config.get("name")
             or settings.get("default_model_id")
@@ -141,22 +163,82 @@ class Orchestrator:
             or target_model_id
         )
 
-        # 2. Provider cible dynamique (priorité : payload -> provider_config -> settings DB -> generic fallback)
+        # 2. Provider cible dynamique (priorité : payload -> model_options -> request_options -> provider_config -> settings DB -> generic fallback)
+        model_opts = payload.get("model_options") if isinstance(payload.get("model_options"), dict) else {}
+        req_opts = payload.get("request_options") if isinstance(payload.get("request_options"), dict) else {}
+
+        # Cohérence modèle-provider : si le modèle appartient à un provider spécifique et qu'aucun provider n'est forcé
+        model_prov_id = model_config.get("provider_id")
+        if model_prov_id and not payload.get("provider") and not model_opts.get("provider") and not req_opts.get("provider"):
+            if provider_config.get("id") != model_prov_id and provider_config.get("name") != model_prov_id:
+                try:
+                    res_p = requests.get(f"{NODE_GATEWAY_URL}/aiprovider/{model_prov_id}", timeout=3)
+                    if res_p.status_code == 200 and res_p.json():
+                        p_data = res_p.json()
+                        provider_config = p_data[0] if isinstance(p_data, list) and p_data else p_data
+                except Exception as e:
+                    logger.warning(f"Impossible d'aligner le provider avec le modèle : {e}")
+
         provider_name = (
             payload.get("provider")
+            or model_opts.get("provider")
+            or req_opts.get("provider")
             or provider_config.get("name")
             or settings.get("default_provider")
             or "default"
         )
-        base_url = provider_config.get("endpoint_url") or provider_config.get("base_url")
-        api_key = provider_config.get("api_key")
-
-        provider_instance = OllamaProvider(
-            base_url=base_url,
-            api_key=api_key,
-            default_model=target_model_id,
-            name=provider_name
+        base_url = (
+            payload.get("endpoint_url")
+            or model_opts.get("endpoint_url")
+            or req_opts.get("endpoint_url")
+            or provider_config.get("endpoint_url")
+            or provider_config.get("base_url")
         )
+        api_key = (
+            payload.get("api_key")
+            or model_opts.get("api_key")
+            or req_opts.get("api_key")
+            or provider_config.get("api_key")
+            or provider_config.get("secret_hash")
+        )
+
+        provider_type = (provider_config.get("type") or "").lower()
+        provider_name_lower = str(provider_name).lower()
+
+        is_ollama = (
+            "ollama" in provider_name_lower
+            or "ollama" in provider_type
+            or provider_type == "local"
+            or (base_url and ("ollama" in str(base_url) or "11434" in str(base_url)))
+        ) and not (
+            "groq" in provider_name_lower
+            or (base_url and "api.groq.com" in str(base_url))
+            or (api_key and str(api_key).startswith("gsk_"))
+        )
+
+        is_openai_cloud = not is_ollama and (
+            "groq" in provider_name_lower
+            or "groq" in provider_type
+            or "openai" in provider_name_lower
+            or "openai" in provider_type
+            or (base_url and any(h in str(base_url) for h in ["api.groq.com", "api.openai.com", "openrouter", "together"]))
+            or (api_key and str(api_key).startswith("gsk_"))
+        )
+
+        if is_openai_cloud:
+            provider_instance = OpenAICompatibleProvider(
+                base_url=base_url or "https://api.groq.com/openai/v1",
+                api_key=api_key or os.getenv("LLM_API_KEY") or "",
+                default_model=target_model_id or "qwen/qwen3.8-27b",
+                name=provider_name
+            )
+        else:
+            provider_instance = OllamaProvider(
+                base_url=base_url,
+                api_key=api_key,
+                default_model=target_model_id,
+                name=provider_name
+            )
 
         return {
             "provider_instance": provider_instance,
@@ -203,6 +285,33 @@ class Orchestrator:
                 "resolved_configuration": snapshot,
             }
         prompt_config = resolved.get("prompt") or {}
+
+        # 2. Résolution dynamique du Provider et du Modèle
+        resolved_provider_ctx = self.resolve_provider_for_request(payload, resolved=resolved)
+        self.provider = resolved_provider_ctx["provider_instance"]
+        target_model = resolved_provider_ctx["model_id"]
+        if target_model and hasattr(self.provider, "default_model"):
+            self.provider.default_model = target_model
+
+        # 3. Détection du mode Pipeline (Multi-step Prompt Chaining)
+        steps = (
+            payload.get("steps")
+            or (payload.get("configuration") or {}).get("steps")
+            or prompt_config.get("steps")
+        )
+        if steps:
+            logger.info(f"Délégation de l'exécution au PipelineRunner ({len(steps)} étapes détectées)")
+            pipeline_result = self.pipeline_runner.run(payload, resolved=resolved)
+            pipeline_result["module"] = module
+            pipeline_result["use_case"] = use_case
+            pipeline_result["resolved_configuration"] = snapshot
+            if "resources_used" not in pipeline_result:
+                pipeline_result["resources_used"] = {
+                    "total_steps": len(steps),
+                    "provider": resolved_provider_ctx.get("provider_name") or "default",
+                }
+            return pipeline_result
+
         system_prompt = (
             payload.get("system_prompt_template")
             or payload.get("system_prompt")
@@ -310,23 +419,18 @@ class Orchestrator:
             system_prompt += schema_instructions
             model_options["format"] = "json"
 
-        # 4. Utilisation des éléments déjà résolus par la hiérarchie du Core.
+        # 4. Paramètres d'exécution résolus par la hiérarchie du Core.
         provider_config = resolved.get("provider") or {}
         model_config = resolved.get("model") or {}
         policy = resolved.get("policy") or {}
-        target_model = model_config.get("model_id") if model_config else None
-        if provider_config and (not hasattr(self, "provider") or isinstance(self.provider, OllamaProvider)):
-            base_url = provider_config.get("endpoint_url") or provider_config.get("base_url")
-            api_key = provider_config.get("api_key") or provider_config.get("secret_hash")
-            self.provider = OllamaProvider(base_url=base_url, api_key=api_key, default_model=target_model)
-        elif not getattr(self, "provider", None):
-            self.provider = OllamaProvider(default_model=target_model)
+
         if snapshot.get("temperature") is not None:
             model_options["temperature"] = snapshot["temperature"]
         elif output_schema and "temperature" not in model_options:
             model_options["temperature"] = 0
         if snapshot.get("token_limit") is not None:
             model_options.setdefault("num_predict", snapshot["token_limit"])
+            model_options.setdefault("max_tokens", snapshot["token_limit"])
 
         # 5. Exécution LLM via le Provider dynamique
         start_time = time.time()
@@ -351,94 +455,56 @@ class Orchestrator:
             status = "success"
             error_msg = ""
         except Exception as e:
-            logger.warning(f"Erreur de génération LLM ({e}), bascule sur la synthèse structurée...")
-            if output_schema:
-                fallback_obj = {}
-                schema_items = output_schema if isinstance(output_schema, list) else []
-                if isinstance(output_schema, dict):
-                    schema_items = [{"name": k, "type": v} for k, v in output_schema.items()]
-                
-                user_lower = (user_prompt or "").lower()
-                for f in schema_items:
-                    fname = f.get("name") or f.get("key") or "val"
-                    ftype = str(f.get("type") or "string").lower()
-                    fname_lower = fname.lower()
-                    
-                    if any(num_t in ftype for num_t in ["int", "num", "float"]):
-                        fallback_obj[fname] = 75 if "score" in fname_lower or "risque" in fname_lower else 0
-                    elif "bool" in ftype:
-                        fallback_obj[fname] = True
-                    elif "array" in ftype or "list" in ftype:
-                        if any(w in fname_lower for w in ["prop", "solut"]):
-                            fallback_obj[fname] = [
-                                "Contrôle des journaux d'audit et pièces justificatives",
-                                "Régularisation conservatoire selon les directives de référence",
-                                "Notification et accompagnement du demandeur"
-                            ]
-                        elif any(w in fname_lower for w in ["mot", "sensib", "keyword"]):
-                            detected = [w for w in ["fraude", "bceao", "avocat", "dab", "plainte"] if w in user_lower]
-                            fallback_obj[fname] = detected or ["plainte", "dab"]
-                        else:
-                            fallback_obj[fname] = []
-                    else:
-                        if any(w in fname_lower for w in ["urg", "grav"]):
-                            fallback_obj[fname] = "GRAVE" if any(w in user_lower for w in ["fraude", "avocat", "bceao"]) else "MOYEN"
-                        elif any(w in fname_lower for w in ["sent", "polar"]):
-                            fallback_obj[fname] = "negatif" if any(w in user_lower for w in ["fraude", "avocat", "erreur", "sans accord"]) else "neutre"
-                        elif any(w in fname_lower for w in ["cat", "type"]):
-                            fallback_obj[fname] = "Cartes & DAB" if "dab" in user_lower or "carte" in user_lower else "Général"
-                        elif any(w in fname_lower for w in ["mot", "motif", "subcat"]):
-                            fallback_obj[fname] = "Retrait non distribué / Contestation" if "dab" in user_lower else "Réclamation générale"
-                        elif any(w in fname_lower for w in ["resum", "synth"]):
-                            fallback_obj[fname] = (user_prompt[:90] + "...") if len(user_prompt) > 90 else user_prompt
-                        elif any(w in fname_lower for w in ["rais", "justif"]):
-                            fallback_obj[fname] = "Qualification automatisée basée sur les règles et contextes enregistrés."
-                        else:
-                            fallback_obj[fname] = "Traitement automatisé"
-
-                result_text = json.dumps(fallback_obj, ensure_ascii=False)
-                execution_time_ms = int((time.time() - start_time) * 1000)
-                status = "success"
-                error_msg = ""
-            else:
-                result_text = ""
-                execution_time_ms = int((time.time() - start_time) * 1000)
-                status = "error"
-                error_msg = str(e)
-                logger.error(f"Erreur de génération LLM: {e}")
+            provider_label = getattr(self.provider, "name", "LLM")
+            logger.error(f"Erreur lors de l'appel au Provider {provider_label} : {e}")
+            result_text = ""
+            execution_time_ms = int((time.time() - start_time) * 1000)
+            status = "error"
+            error_msg = f"Erreur Provider {provider_label}: {str(e)}"
 
         # 6. Enregistrement d'Audit
-        try:
-            audit_payload = {
-                "project_id": payload.get("project_id"),
-                "project_name": payload.get("project_name"),
-                "module_name": module,
-                "use_case": use_case,
-                "prompt_name": use_case,
-                "provider": provider_config.get("name") if provider_config else "default",
-                "model": model_config.get("name") or target_model or "default",
-                "status": status,
-                "execution_time": execution_time_ms,
-                "user_name": "API User",
-                "output": result_text if status == "success" else "",
-                "error": error_msg,
-                "human_validation": "required" if status == "success" and snapshot.get("human_validation_required") else ("pending" if status == "success" else "none"),
-                "justification": "Validation humaine requise par la policy" if status == "success" and snapshot.get("human_validation_required") else ("En attente de justification humaine" if status == "success" else ""),
-                "resources_used": json.dumps({"prompt_chars": len(system_prompt), "provider": provider_config.get("name") or "default", "rag": bool(context_text)}, ensure_ascii=False),
-                "configuration_snapshot": json.dumps(snapshot, ensure_ascii=False, sort_keys=True),
-                "input_reference": payload.get("input_reference"),
-                "context_reference": payload.get("context_reference")
-            }
-            requests.post(f"{NODE_GATEWAY_URL}/aiexecution", json=audit_payload, timeout=5)
-        except Exception as e:
-            logger.error(f"Impossible d'enregistrer l'audit d'exécution: {e}")
+        resources_dict = {
+            "prompt_chars": len(system_prompt),
+            "provider": provider_config.get("name") if provider_config else (resolved_provider_ctx.get("provider_name") or "default"),
+            "rag": bool(context_text),
+        }
+
+        should_persist_audit = not payload.get("skip_audit_persistence") and not payload.get("delegate_audit")
+        if should_persist_audit:
+            try:
+                audit_payload = {
+                    "project_id": payload.get("project_id"),
+                    "project_name": payload.get("project_name"),
+                    "module_name": module,
+                    "use_case": use_case,
+                    "prompt_name": use_case,
+                    "provider": provider_config.get("name") if provider_config else "default",
+                    "model": model_config.get("name") or target_model or "default",
+                    "status": status,
+                    "execution_time": execution_time_ms,
+                    "user_name": "API User",
+                    "output": result_text if status == "success" else "",
+                    "error": error_msg,
+                    "human_validation": "required" if status == "success" and snapshot.get("human_validation_required") else ("pending" if status == "success" else "none"),
+                    "justification": "Validation humaine requise par la policy" if status == "success" and snapshot.get("human_validation_required") else ("En attente de justification humaine" if status == "success" else ""),
+                    "resources_used": json.dumps(resources_dict, ensure_ascii=False),
+                    "configuration_snapshot": json.dumps(snapshot, ensure_ascii=False, sort_keys=True),
+                    "input_reference": payload.get("input_reference"),
+                    "context_reference": payload.get("context_reference")
+                }
+                requests.post(f"{NODE_GATEWAY_URL}/aiexecution", json=audit_payload, timeout=5)
+            except Exception as e:
+                logger.error(f"Impossible d'enregistrer l'audit d'exécution: {e}")
 
         if status == "error":
             return {
                 "status": "error",
                 "module": module,
                 "use_case": use_case,
+                "error": error_msg,
                 "message": error_msg,
+                "execution_time_ms": execution_time_ms,
+                "resources_used": resources_dict,
                 "resolved_configuration": snapshot
             }
             
@@ -447,6 +513,8 @@ class Orchestrator:
             "module": module,
             "use_case": use_case,
             "result": result_text,
+            "execution_time_ms": execution_time_ms,
             "rag_context_used": bool(context_text),
+            "resources_used": resources_dict,
             "resolved_configuration": snapshot
         }

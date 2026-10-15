@@ -51,6 +51,10 @@ class ExecutePayload(BaseModel):
     module_key: Optional[str] = None
     use_case: Optional[str] = None
     use_case_key: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    endpoint_url: Optional[str] = None
+    api_key: Optional[str] = None
     system_prompt_template: Optional[str] = None
     system_prompt: Optional[str] = None
     prompt: Optional[str] = None
@@ -69,6 +73,12 @@ class ExecutePayload(BaseModel):
     configuration: Optional[Dict[str, Any]] = None
     input_reference: Optional[Dict[str, Any]] = None
     context_reference: Optional[Dict[str, Any]] = None
+    steps: Optional[List[Dict[str, Any]]] = None
+    output_strategy: Optional[str] = "merge_all"
+    stop_on_error: Optional[bool] = True
+
+    class Config:
+        extra = "allow"
 
 class RagIndexPayload(BaseModel):
     collection: str
@@ -193,7 +203,29 @@ def resolve_configuration(payload: ExecutePayload):
 def execute_use_case(payload: ExecutePayload):
     try:
         result = orchestrator.execute(payload.dict())
+        if result.get("status") == "error":
+            raise HTTPException(
+                status_code=502,
+                detail=result.get("message") or result.get("error") or "Erreur d'exécution du Provider LLM"
+            )
         return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/pipeline/execute")
+def execute_pipeline_use_case(payload: ExecutePayload):
+    try:
+        result = orchestrator.execute(payload.dict())
+        if result.get("status") == "error":
+            raise HTTPException(
+                status_code=502,
+                detail=result.get("message") or result.get("error") or "Erreur d'exécution du Pipeline LLM"
+            )
+        return result
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
