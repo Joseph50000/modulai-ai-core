@@ -22,15 +22,23 @@ class OllamaProvider:
         Exécute un prompt via le provider Ollama de façon agnostique du métier.
         """
         target_model = model or self.default_model
-        opts = options or {'temperature': 0}
+        opts = dict(options) if options else {'temperature': 0}
+        fmt = opts.pop("format", None)
         
         try:
             logger.info(f"Appel générique à Ollama (Modèle: {target_model})...")
-            response = self.client.chat(model=target_model, messages=[
-                {'role': 'system', 'content': system_prompt},
-                {'role': 'user', 'content': user_prompt}
-            ], options=opts)
-            
+            chat_kwargs = {
+                "model": target_model,
+                "messages": [
+                    {'role': 'system', 'content': system_prompt},
+                    {'role': 'user', 'content': user_prompt}
+                ],
+                "options": opts,
+            }
+            if fmt:
+                chat_kwargs["format"] = fmt
+
+            response = self.client.chat(**chat_kwargs)
             return response['message']['content'].strip()
         except Exception as e:
             logger.error(f"Erreur lors de l'appel au Provider Ollama : {e}")
@@ -41,14 +49,23 @@ class OllamaProvider:
         Exécute un prompt via le provider Ollama et retourne le résultat en stream.
         """
         target_model = model or self.default_model
-        opts = options or {'temperature': 0}
+        opts = dict(options) if options else {'temperature': 0}
+        fmt = opts.pop("format", None)
         
         try:
-            response = self.client.chat(model=target_model, messages=[
-                {'role': 'system', 'content': system_prompt},
-                {'role': 'user', 'content': user_prompt}
-            ], options=opts, stream=True)
-            
+            chat_kwargs = {
+                "model": target_model,
+                "messages": [
+                    {'role': 'system', 'content': system_prompt},
+                    {'role': 'user', 'content': user_prompt}
+                ],
+                "options": opts,
+                "stream": True,
+            }
+            if fmt:
+                chat_kwargs["format"] = fmt
+
+            response = self.client.chat(**chat_kwargs)
             for chunk in response:
                 yield chunk['message']['content']
         except Exception as e:
