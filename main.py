@@ -260,7 +260,7 @@ def transcribe_audio(payload: TranscribeRequest):
         if is_audio_compatible:
             if not audio_key and provider_cfg.get("api_key"):
                 audio_key = provider_cfg.get("api_key")
-            if not audio_url:
+            if not audio_url or not audio_url.endswith("/audio/transcriptions"):
                 if "groq" in provider_type:
                     audio_url = "https://api.groq.com/openai/v1/audio/transcriptions"
                     audio_model = audio_model or "whisper-large-v3-turbo"

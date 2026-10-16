@@ -33,11 +33,11 @@ class TranscriptionProvider:
         # Détection intelligente du provider selon la clé ou l'URL
         if self.api_key.startswith("gsk_"):
             self.provider = "groq"
-            self.base_url = DEFAULT_GROQ_URL if (not base_url or "api.groq.com" not in base_url) else base_url
+            self.base_url = DEFAULT_GROQ_URL if (not base_url or not base_url.endswith("/audio/transcriptions")) else base_url
             self.model = model if (model and "whisper" in model.lower()) else DEFAULT_GROQ_MODEL
         elif self.api_key.startswith("sk-") and "groq" not in (provider or "").lower():
             self.provider = "openai"
-            self.base_url = "https://api.openai.com/v1/audio/transcriptions" if (not base_url or "api.openai.com" not in base_url) else base_url
+            self.base_url = "https://api.openai.com/v1/audio/transcriptions" if (not base_url or not base_url.endswith("/audio/transcriptions")) else base_url
             self.model = model if (model and "whisper" in model.lower()) else "whisper-1"
         else:
             self.provider = (
